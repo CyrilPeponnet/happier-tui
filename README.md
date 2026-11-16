@@ -36,11 +36,12 @@ Run `happier-tui`. To update: run the same command again. To remove it:
 ```bash
 git clone https://github.com/CyrilPeponnet/happier-tui.git
 cd happier-tui
-npm install        # downloads dependencies and builds
-npm install -g .   # adds the `happier-tui` command
+npm install        # downloads dependencies
+npm run build
+npm install -g .   # links the `happier-tui` command to this folder
 ```
 
-To update: `git pull && npm install` in the same folder. Without installing a command, run
+To update: `git pull && npm install && npm run build` in the same folder. Without installing a command, run
 `node dist/main.js` from the folder.
 
 ## Use

@@ -23,6 +23,8 @@ export interface HappierConfig {
 	serverUrl: string;
 	token: string;
 	keys: AccountKeys;
+	/** Id this computer is registered under on the server, when its daemon has registered. */
+	machineId?: string;
 }
 
 export interface ConfigOverrides {
@@ -52,14 +54,17 @@ export function loadConfig(overrides: ConfigOverrides = {}): HappierConfig {
 
 	const settingsPath = join(homeDir, "settings.json");
 	let profiles: Record<string, ServerProfile> = {};
+	let machineIds: Record<string, string> = {};
 	if (existsSync(settingsPath)) {
 		const settings = readJson(settingsPath) as {
 			schemaVersion?: number;
 			activeServerId?: string;
 			servers?: Record<string, ServerProfile>;
+			machineIdByServerId?: Record<string, string>;
 		};
 		if ((settings.schemaVersion ?? 0) >= 5) {
 			profiles = settings.servers ?? {};
+			machineIds = settings.machineIdByServerId ?? {};
 			if (settings.activeServerId) serverId = settings.activeServerId;
 		}
 	}
@@ -111,5 +116,5 @@ export function loadConfig(overrides: ConfigOverrides = {}): HappierConfig {
 		keys = { type: "tokenOnly" };
 	}
 
-	return { homeDir, serverId, serverName, serverUrl, token: raw.token, keys };
+	return { homeDir, serverId, serverName, serverUrl, token: raw.token, keys, machineId: machineIds[serverId] };
 }

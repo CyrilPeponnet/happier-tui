@@ -36,7 +36,7 @@ import {
 	type NotifyOptions,
 	notificationSequence,
 } from "./ui/notify.js";
-import { NewSessionFlow } from "./new-session.js";
+import { type LocalLaunch, NewSessionFlow } from "./new-session.js";
 import { errorText, justify, machineName, questionsOf, requestSummary, shortHost } from "./ui/format.js";
 import { Picker, type PickerOptions } from "./ui/picker.js";
 import { Home, sortSessions, statusGlyph } from "./ui/home.js";
@@ -138,6 +138,8 @@ export class App {
 		private readonly client: HappierClient,
 		private readonly initialSession?: string,
 		private readonly notify: NotifyOptions = { osc: true, bell: true },
+		/** Start a session on this computer right away instead of showing the start screen. */
+		private readonly launch?: LocalLaunch,
 	) {
 		// The alt-screen renderer enables terminal focus reporting and consumes the focus events in
 		// its own input listener, which runs before ours. Observe them at the terminal instead.
@@ -232,6 +234,9 @@ export class App {
 			const requested = this.sortedSessions().find((s) => s.id === wanted || s.id.startsWith(wanted) || s.metadata.tag === wanted);
 			if (requested) await this.openSession(requested.id);
 			else this.flash(`No session matches "${wanted}"`, "warn");
+		} else if (this.launch) {
+			const launch = this.launch;
+			this.run(() => this.newSession(launch));
 		}
 		this.tui.requestRender();
 	}
@@ -812,8 +817,8 @@ export class App {
 		await this.client.respondPermission(s, req, choice as "approved" | "approved_for_session" | "denied" | "abort");
 	}
 
-	private async newSession(): Promise<void> {
-		const sessionId = await this.newSessionFlow.run();
+	private async newSession(local?: LocalLaunch): Promise<void> {
+		const sessionId = await this.newSessionFlow.run(local);
 		if (sessionId) await this.openSession(sessionId);
 	}
 

@@ -598,6 +598,18 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 
 	// --- RPC ---
 
+	private waitConnected(socket: Socket, ms = 8_000): Promise<void> {
+		return new Promise((resolve) => {
+			const done = () => {
+				clearTimeout(timer);
+				socket.off("connect", done);
+				resolve();
+			};
+			const timer = setTimeout(done, ms);
+			socket.on("connect", done);
+		});
+	}
+
 	private async rpc(
 		key: ContentKey | null,
 		method: string,
@@ -606,6 +618,8 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 		authorization?: Obj,
 	): Promise<unknown> {
 		const socket = this.socket;
+		// A call made right after start-up (or during a reconnect) waits for the socket briefly.
+		if (socket && !socket.connected) await this.waitConnected(socket);
 		if (!socket?.connected) throw new HappierError("Not connected to the relay.", "not_connected");
 		if (!key) throw new HappierError("No key available for this target.");
 		const payload: Obj = {

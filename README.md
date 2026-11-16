@@ -49,8 +49,10 @@ To update: `git pull && npm install && npm run build` in the same folder. Withou
 ```
 happier-tui                          start screen: pick or start a session
 happier-tui <session-id-or-prefix>   open a session directly
+happier-tui <directory>              start a new session on this machine in that directory
 happier-tui --list [--all]           print active (or all) sessions and exit
 
+  --agent <name>          agent for the new session (claude, codex, pi, …); asked for otherwise
   --server <id-or-name>   server profile from ~/.happier/settings.json
   --server-url <url>      override the relay URL
   --home <dir>            Happier home (default ~/.happier, or $HAPPIER_HOME_DIR)

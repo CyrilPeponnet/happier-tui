@@ -1,5 +1,6 @@
+import { hostname } from "node:os";
 import { type HappierClient, HappierError, type Machine } from "./happier/client.js";
-import { errorText, machineName } from "./ui/format.js";
+import { errorText, machineName, shortHost } from "./ui/format.js";
 import type { PickerOptions } from "./ui/picker.js";
 import { ago, shortPath } from "./ui/theme.js";
 
@@ -15,6 +16,13 @@ export interface FlowUi {
 	clearNotice(): void;
 }
 
+/** Starts a session on this computer in a known directory, skipping those wizard steps. */
+export interface LocalLaunch {
+	directory: string;
+	/** Agent to start; asked for when omitted. */
+	agent?: string;
+}
+
 /** The "new session" wizard: pick a machine, an agent and a directory, then spawn. */
 export class NewSessionFlow {
 	private readonly detectedAgents = new Map<string, string[]>();
@@ -23,37 +31,49 @@ export class NewSessionFlow {
 	constructor(private readonly ui: FlowUi) {}
 
 	/** Walks machine → agent → directory and starts the session. Resolves its id, or null when cancelled. */
-	async run(): Promise<string | null> {
+	async run(local?: LocalLaunch): Promise<string | null> {
 		const machines = (await this.ui.client.refreshMachines()).filter((m) => m.active);
 		if (machines.length === 0) {
 			this.ui.flash("No machine is online. Start the Happier daemon on one (`happier daemon start`).", "warn", 8000);
 			return null;
 		}
-		const machineId =
-			machines.length === 1
-				? machines[0]!.id
-				: await this.ui.pick({
-						title: "New session · machine",
-						noFilter: true,
-						items: machines.map((m) => ({
-							value: m.id,
-							label: machineName(m),
-							description: `${m.metadata.platform ?? ""} · happier ${m.metadata.happyCliVersion ?? "?"}`,
-						})),
-					});
-		const machine = machines.find((m) => m.id === machineId);
+		let machine: Machine | undefined;
+		if (local) {
+			machine = this.localMachine(machines);
+			if (!machine) {
+				this.ui.flash("This computer is not online in Happier. Start its daemon (`happier daemon start`).", "warn", 8000);
+				return null;
+			}
+		} else {
+			const machineId =
+				machines.length === 1
+					? machines[0]!.id
+					: await this.ui.pick({
+							title: "New session · machine",
+							noFilter: true,
+							items: machines.map((m) => ({
+								value: m.id,
+								label: machineName(m),
+								description: `${m.metadata.platform ?? ""} · happier ${m.metadata.happyCliVersion ?? "?"}`,
+							})),
+						});
+			machine = machines.find((m) => m.id === machineId);
+		}
 		if (!machine) return null;
 
-		const { agents, detected } = await this.agentsFor(machine);
-		const agent = await this.ui.pick({
-			title: `New session on ${machineName(machine)} · agent`,
-			noFilter: true,
-			hint: detected ? undefined : "could not confirm which agents are installed — showing the usual ones",
-			items: agents.map((a) => ({ value: a, label: a })),
-		});
+		let agent = local?.agent ?? null;
+		if (!agent) {
+			const { agents, detected } = await this.agentsFor(machine);
+			agent = await this.ui.pick({
+				title: `New session on ${machineName(machine)}${local ? ` in ${shortPath(local.directory, machine.metadata.homeDir)}` : ""} · agent`,
+				noFilter: true,
+				hint: detected ? undefined : "could not confirm which agents are installed — showing the usual ones",
+				items: agents.map((a) => ({ value: a, label: a })),
+			});
+		}
 		if (!agent) return null;
 
-		const directory = await this.pickDirectory(machine);
+		const directory = local?.directory ?? (await this.pickDirectory(machine));
 		if (!directory) return null;
 
 		this.ui.flash(`Starting ${agent} in ${directory}…`, "info", 60_000);
@@ -72,6 +92,13 @@ export class NewSessionFlow {
 		}
 		this.ui.clearNotice();
 		return res.sessionId;
+	}
+
+	/** The machine this computer's daemon registered as: by stored id, else by host name. */
+	private localMachine(machines: Machine[]): Machine | undefined {
+		const id = this.ui.client.config.machineId;
+		const host = shortHost(hostname()).toLowerCase();
+		return machines.find((m) => m.id === id) ?? machines.find((m) => shortHost(m.metadata.host).toLowerCase() === host);
 	}
 
 	/**

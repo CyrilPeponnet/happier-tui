@@ -1,0 +1,45 @@
+{
+  "name": "happier-tui",
+  "version": "0.1.0",
+  "description": "Terminal client for Happier agent sessions, with bell and notification support for tmux, cmux and other terminals",
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "dev": "tsx src/main.ts",
+    "build": "node -e \"import('node:fs').then(f=>f.rmSync('dist',{recursive:true,force:true}))\" && tsc -p .",
+    "typecheck": "tsc -p . --noEmit",
+    "start": "node dist/main.js",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "happier",
+    "tui",
+    "terminal",
+    "coding-agents",
+    "tmux",
+    "cmux"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-tui": "^1.5.2",
+    "chalk": "^6.0.1",
+    "socket.io-client": "^4.8.4",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "bin": {
+    "happier-tui": "dist/main.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ]
+}

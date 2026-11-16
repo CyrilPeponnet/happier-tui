@@ -6,7 +6,7 @@ Pick a session running on any of your machines, read it live, send prompts, answ
 requests, start new sessions — and get a bell or a notification from your terminal, tmux or cmux
 when an agent needs you.
 
-![happier-tui start screen](assets/main.png)
+![happier-tui start screen](https://raw.githubusercontent.com/CyrilPeponnet/happier-tui/main/assets/main.png)
 
 happier-tui is an independent, unofficial client. It talks to the Happier relay directly (HTTP and
 Socket.IO, end-to-end encrypted) and is built on
@@ -25,16 +25,23 @@ You need two things on the machine first:
 Then:
 
 ```bash
-git clone <repo-url> happier-tui
+npm install -g happier-tui
+```
+
+Run `happier-tui`. To update: run the same command again. To remove it:
+`npm uninstall -g happier-tui`.
+
+### From source
+
+```bash
+git clone https://github.com/CyrilPeponnet/happier-tui.git
 cd happier-tui
 npm install        # downloads dependencies and builds
 npm install -g .   # adds the `happier-tui` command
 ```
 
-Run `happier-tui`. To update later: `git pull && npm install` in the same folder. To remove it:
-`npm uninstall -g happier-tui`.
-
-Prefer not to install a command? Skip the last step and run `node dist/main.js` from the folder.
+To update: `git pull && npm install` in the same folder. Without installing a command, run
+`node dist/main.js` from the folder.
 
 ## Use
 

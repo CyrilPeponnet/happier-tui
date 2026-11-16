@@ -41,5 +41,13 @@
     "dist",
     "README.md",
     "LICENSE"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CyrilPeponnet/happier-tui.git"
+  },
+  "homepage": "https://github.com/CyrilPeponnet/happier-tui#readme",
+  "bugs": {
+    "url": "https://github.com/CyrilPeponnet/happier-tui/issues"
+  }
 }

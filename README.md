@@ -104,7 +104,12 @@ arrows to send one as your reply, or `esc` to write your own (`ctrl+r` brings it
 also click a choice in the transcript. Permission requests open the same way.
 
 Anything else starting with `/` goes to the agent, whose own commands are offered in
-autocomplete. Model, mode and thinking-level changes apply from your next message.
+autocomplete. The agent publishes them once it has handled a first message, so a new session
+offers only the TUI's own commands until then. An agent lists only what it can run from a
+message: Claude includes its built-ins (`/compact`, `/clear`, `/context`, …), while pi lists its
+extensions and skills, since its other built-ins belong to its own terminal UI (the commands
+above cover the model, thinking level, rename and `/tree`). `/compact` works with every agent.
+Model, mode and thinking-level changes apply from your next message.
 
 Above the editor, the TUI shows what needs you or is pending: permission requests and questions,
 messages waiting in the queue, the session's goal and a usage-limit wait. Once a turn is over, its tool calls

@@ -68,6 +68,11 @@ const LOCAL_COMMANDS: SlashCommand[] = [
 	{ name: "quit", description: "Exit" },
 ];
 
+/** Sent to the agent like its own commands; Happier runs them for every agent, listed or not. */
+const RUNNER_COMMANDS: SlashCommand[] = [
+	{ name: "compact", description: "Summarize the conversation so far to free up context" },
+];
+
 const KEYS_HELP = [
 	"enter send · shift+enter newline · esc interrupt the agent",
 	"ctrl+s session list · ctrl+n new session · alt+↑/↓ previous/next active session",
@@ -554,15 +559,16 @@ export class App {
 		const details = Array.isArray(s.metadata.slashCommandDetails) ? s.metadata.slashCommandDetails : [];
 		const names = Array.isArray(s.metadata.slashCommands) ? s.metadata.slashCommands : [];
 		const seen = new Set(LOCAL_COMMANDS.map((x) => x.name));
-		for (const d of [...details, ...names]) {
-			const name = typeof d === "string" ? d : isObj(d) && typeof d.name === "string" ? d.name : "";
+		// Details are `{command, description}`; plain names cover agents that publish only those.
+		for (const d of [...details, ...names, ...RUNNER_COMMANDS]) {
+			const name = typeof d === "string" ? d : isObj(d) ? String(d.command ?? d.name ?? "") : "";
 			const clean = name.replace(/^\//, "");
 			if (!clean || seen.has(clean)) continue;
 			seen.add(clean);
 			const description = isObj(d) && typeof d.description === "string" ? d.description : "agent command";
 			remote.push({ name: clean, description });
 		}
-		const key = `${s.id}:${remote.length}`;
+		const key = `${s.id}:${remote.map((c) => c.name).join(" ")}`;
 		if (key === this.commandsKey) return;
 		this.commandsKey = key;
 		void this.sessionFiles(s); // warm the `@` index; a large tree takes seconds to list

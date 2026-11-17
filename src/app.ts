@@ -213,6 +213,12 @@ export class App {
 			{ component: new Lines((w) => this.renderRequests(w)), basis: "auto", shrink: 0 },
 		]);
 		this.showHome();
+		this.view.isBusy = () => {
+			const s = this.current();
+			return !!s && this.busy(s);
+		};
+		// Keep the clicked line where it is while what is below it unfolds.
+		this.view.onToggle = () => this.scroll.scrollTo(this.scroll.scrollTop, { disableFollow: true });
 		this.view.onSubagent = (callId) => {
 			const s = this.current();
 			if (s) void this.loadSubagent(s, callId);

@@ -301,22 +301,20 @@ function toolDescription(input: unknown): string | undefined {
 
 // --- presentation helpers (pure, shared by the UI) ---------------------------
 
-const ARG_KEYS = ["command", "file_path", "path", "pattern", "query", "url", "title", "prompt", "description"];
+const ARG_KEYS = ["command", "file_path", "path", "pattern", "query", "url", "title", "prompt"];
 
-/** One-line summary of a tool invocation, e.g. `Bash  npm test`. */
-export function toolSummary(item: Extract<Item, { kind: "tool" }>): { name: string; arg: string } {
+/**
+ * One-line summary of a tool invocation. `arg` is what it is for: the agent's own description of
+ * the step when it gave one (Claude's Bash and Task), else the main argument. `detail` is that
+ * main argument when the description took its place, e.g. the command line.
+ */
+export function toolSummary(item: Extract<Item, { kind: "tool" }>): { name: string; arg: string; detail?: string } {
 	const input = isObj(item.input) ? item.input : {};
-	let arg = "";
-	for (const key of ARG_KEYS) {
-		const v = str(input[key]);
-		if (v) {
-			arg = v;
-			break;
-		}
-	}
-	if (!arg && item.description) arg = item.description;
-	if (!arg && typeof item.input === "string") arg = item.input;
-	return { name: item.name, arg: arg.replace(/\s+/g, " ").trim() };
+	const flat = (v: string) => v.replace(/\s+/g, " ").trim();
+	const main = ARG_KEYS.map((k) => str(input[k])).find((v) => v?.trim()) ?? (typeof item.input === "string" ? item.input : "");
+	const description = item.description?.trim();
+	if (description && main && flat(main) !== flat(description)) return { name: item.name, arg: flat(description), detail: flat(main) };
+	return { name: item.name, arg: flat(description || main) };
 }
 
 /**

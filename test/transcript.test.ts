@@ -114,6 +114,7 @@ test("provider terminal output that repeats the turn failure is recorded once", 
 	assert.equal(t.failures.has(text), true);
 	assert.deepEqual(t.list().at(-1)!.items, [{ kind: "notice", text: `Turn failed: ${text}`, level: "error" }]);
 });
+
 const claudeResult = (toolUseResult: object, content = "model text") => ({ content, tool_use_result: toolUseResult });
 
 test("claude tool results read as text: diffs, read counts, command output", () => {

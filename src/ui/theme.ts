@@ -58,13 +58,6 @@ export function clean(text: string): string {
 }
 
 /** Happier agents append reply suggestions as `<options><option>…</option></options>`; show them as a list. */
-export function renderOptionsMarkup(text: string): string {
-	return text.replace(/<options>([\s\S]*?)<\/options>/g, (_m, inner: string) => {
-		const options = [...inner.matchAll(/<option>([\s\S]*?)<\/option>/g)].map((m) => (m[1] ?? "").trim());
-		return options.length ? `\n\n${options.map((o) => `- _${o}_`).join("\n")}\n` : "";
-	});
-}
-
 export function shortPath(path: unknown, home: unknown): string {
 	if (typeof path !== "string") return "";
 	if (typeof home === "string" && home && (path === home || path.startsWith(`${home}/`))) {

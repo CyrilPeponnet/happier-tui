@@ -27,7 +27,7 @@ import {
 	sessionTitle,
 } from "./happier/client.js";
 import { CLAUDE_EFFORT_LEVELS, effortOverride, isWaitingForLimit, sessionGoal, sessionModes, sessionOptions, usageLimit } from "./happier/controls.js";
-import { type Row, Transcript } from "./happier/transcript.js";
+import { latestOptions, type Row, Transcript } from "./happier/transcript.js";
 import {
 	type AttentionState,
 	attentionChange,
@@ -221,6 +221,7 @@ export class App {
 		};
 		// Keep the clicked line where it is while what is below it unfolds.
 		this.view.onToggle = () => this.scroll.scrollTo(this.scroll.scrollTop, { disableFollow: true });
+		this.view.onOption = (option) => void this.submit(option);
 		this.view.onSubagent = (callId) => {
 			const s = this.current();
 			if (s) void this.loadSubagent(s, callId);
@@ -351,6 +352,10 @@ export class App {
 			if (entry?.loaded) entry.transcript.upsert(row, row.record);
 			if (sid !== this.currentId) {
 				if (isAgent) this.unread.add(sid);
+			} else {
+				// The turn's last message may land after the session reported the turn over.
+				const s = this.current();
+				if (s) this.promptForRequests(s);
 			}
 			this.tui.requestRender();
 		});
@@ -1053,22 +1058,52 @@ export class App {
 		return v === "yes";
 	}
 
+	/**
+	 * Opens the answer picker for what the open session waits on: each permission request once,
+	 * and choices the agent offered once its turn ends, unless you have started typing.
+	 */
 	private promptForRequests(s: Session): void {
 		if (this.overlay || this.mode !== "chat" || s.id !== this.currentId) return;
 		const next = pendingRequests(s).find((r) => !this.prompted.has(`${s.id}:${r.id}`));
-		if (!next) return;
-		this.prompted.add(`${s.id}:${next.id}`);
-		this.run(() => this.answer(s, next));
+		if (next) {
+			this.prompted.add(`${s.id}:${next.id}`);
+			this.run(() => this.answer(s, next));
+			return;
+		}
+		const options = this.offeredOptions(s);
+		const key = `${s.id}:options:${this.entries.get(s.id)?.transcript.maxSeq}`;
+		if (options.length === 0 || this.prompted.has(key) || this.editor.getText().trim()) return;
+		this.prompted.add(key);
+		this.run(() => this.chooseOption(options));
 	}
 
+	/** ctrl+r: answer what the agent is waiting for: a permission request, else its offered choices. */
 	private async answerRequest(): Promise<void> {
 		const s = this.current();
 		const req = s && pendingRequests(s)[0];
-		if (!s || !req) {
-			this.flash("No pending permission request in this session.", "info");
+		if (s && req) return this.answer(s, req);
+		const options = s ? this.offeredOptions(s) : [];
+		if (!s || options.length === 0) {
+			this.flash("Nothing to answer in this session.", "info");
 			return;
 		}
-		await this.answer(s, req);
+		await this.chooseOption(options);
+	}
+
+	private async chooseOption(options: string[]): Promise<void> {
+		const choice = await this.pick({
+			title: "Reply with",
+			noFilter: true,
+			hint: `1–${options.length} or ↑↓ enter · esc to write your own reply (ctrl+r brings this back)`,
+			items: options.map((o, i) => ({ value: o, label: `${i + 1}. ${oneLine(o)}` })),
+		});
+		if (choice) await this.submit(choice);
+	}
+
+	/** Choices the agent offered at the end of its last turn, while it waits for the reply. */
+	private offeredOptions(s: Session): string[] {
+		const entry = this.entries.get(s.id);
+		return entry && !this.busy(s) ? latestOptions(entry.transcript) : [];
 	}
 
 	private async answer(s: Session, req: PermissionRequest): Promise<void> {
@@ -1227,6 +1262,8 @@ export class App {
 				lines.push(c.faint(`   ${more}/queue to edit or cancel`));
 			}
 			const reqs = pendingRequests(s);
+			const offered = reqs.length === 0 ? this.offeredOptions(s).length : 0;
+			if (offered > 0) lines.push(` ${c.accent("❯")} ${c.dim(`${offered} choices above · click one, or ctrl+r`)}`);
 			const first = reqs[0];
 			if (first) {
 				const more = reqs.length > 1 ? c.dim(` (+${reqs.length - 1} more)`) : "";

@@ -79,7 +79,7 @@ Active sessions grouped by machine. Type to search by title, host, agent or path
 | `esc` | interrupt the agent's current turn |
 | `ctrl+s` | back to the start screen |
 | `alt+↑` / `alt+↓` | previous / next active session |
-| `ctrl+r` | answer a pending permission request or agent question |
+| `ctrl+r` | answer a pending permission request, agent question or offered choices |
 | `ctrl+o` / `ctrl+t` | expand tool calls and their output / show or hide thinking |
 | `pgup` / `pgdn`, mouse wheel | scroll; reaching the top loads earlier history |
 | `ctrl+shift+f` | search the transcript |
@@ -98,6 +98,10 @@ Type `@` to mention a file: completion lists the files of the session's folder o
 | `/limit` | after a usage limit: resume automatically when it resets, or check now |
 | `/rename` | rename the session |
 | `/sessions`, `/new-session`, `/abort`, `/stop-session`, `/archive`, `/reload`, `/keys`, `/quit` | |
+
+When the agent ends its turn offering choices, a picker opens: press the number or use the
+arrows to send one as your reply, or `esc` to write your own (`ctrl+r` brings it back). You can
+also click a choice in the transcript. Permission requests open the same way.
 
 Anything else starting with `/` goes to the agent, whose own commands are offered in
 autocomplete. Model, mode and thinking-level changes apply from your next message.

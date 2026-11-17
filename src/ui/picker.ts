@@ -71,6 +71,12 @@ export class Picker implements Component, Focusable {
 			matchesKey(data, "pageDown") ||
 			matchesKey(data, Key.ctrl("n")) ||
 			matchesKey(data, Key.ctrl("p"));
+		// In a short fixed menu, a digit picks that item directly.
+		const digit = this.opts.noFilter && /^[1-9]$/.test(data) ? this.opts.items[Number(data) - 1] : undefined;
+		if (digit) {
+			this.opts.onSelect(digit);
+			return;
+		}
 		if (nav || this.opts.noFilter) {
 			const mapped = matchesKey(data, Key.ctrl("n")) ? "\x1b[B" : matchesKey(data, Key.ctrl("p")) ? "\x1b[A" : data;
 			this.list.handleInput(mapped);

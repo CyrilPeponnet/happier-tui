@@ -12,10 +12,11 @@ import {
 	type Row,
 	type ToolResult,
 	type Transcript,
+	splitOptions,
 	toolResultText,
 	toolSummary,
 } from "../happier/transcript.js";
-import { c, clean, markdownTheme, renderOptionsMarkup } from "./theme.js";
+import { c, clean, markdownTheme } from "./theme.js";
 
 const COLLAPSED_RESULT_LINES = 4;
 const EXPANDED_RESULT_LINES = 400;
@@ -82,6 +83,8 @@ export class TranscriptView implements Component {
 	private toggles = 0;
 	/** Clickable lines of the last render: line → what a click toggles. */
 	private clickable = new Map<number, string>();
+	/** A click on one of the choices an agent offered: send it as the next message. */
+	onOption?: (option: string) => void;
 	/** Called before a click changes the layout, e.g. to keep the viewport still. */
 	onToggle?: () => void;
 	/** First line of each row in the last render, for keeping the viewport anchored across re-layouts. */
@@ -223,6 +226,11 @@ export class TranscriptView implements Component {
 				clicks.push([lines.length, `run:${item.callId}`]);
 				lines.push(` ${c.faint(`▾ ${opened} tool${opened === 1 ? "" : "s"}`)}`);
 			}
+			if (item.kind === "text") {
+				const { options } = splitOptions(clean(item.text));
+				const first = lines.length + rendered.length - options.length;
+				options.forEach((o, k) => clicks.push([first + k, `option:${o}`]));
+			}
 			if (item.kind === "tool" && !isTerminalOutput(item)) {
 				const key = `${run ? "run" : "tool"}:${item.callId}`;
 				clicks.push([lines.length, key]);
@@ -245,8 +253,12 @@ export class TranscriptView implements Component {
 		const key = event.button === "left" ? this.clickable.get(event.y) : undefined;
 		if (!key) return undefined;
 		if (event.type !== "click") return { handled: true, render: false };
-		this.onToggle?.();
 		const id = key.slice(key.indexOf(":") + 1);
+		if (key.startsWith("option:")) {
+			this.onOption?.(id);
+			return { handled: true, render: true };
+		}
+		this.onToggle?.();
 		const set = key.startsWith("run:") ? this.opened : this.full;
 		if (!set.delete(id)) set.add(id);
 		this.toggles++;
@@ -275,9 +287,11 @@ export class TranscriptView implements Component {
 				return body.map((l) => c.userBg(truncateToWidth(`${c.accent("▌")} ${c.user(l)}`, width, "", true)));
 			}
 			case "text": {
-				const md = new Markdown(renderOptionsMarkup(clean(item.text)), 0, 0, markdownTheme);
-				const lines = md.render(width);
+				// Offered choices come last, one per line; renderRow makes them clickable.
+				const { text, options } = splitOptions(clean(item.text));
+				const lines = text ? new Markdown(text, 0, 0, markdownTheme).render(width) : [];
 				if (item.streaming && lines.length) lines[lines.length - 1] += c.accent(" ▍");
+				if (options.length > 0) lines.push("", ...options.map((o) => `${c.accent("❯")} ${c.user(o.replace(/\s+/g, " "))}`));
 				return lines.map((l) => truncateToWidth(l, width));
 			}
 			case "thinking": {

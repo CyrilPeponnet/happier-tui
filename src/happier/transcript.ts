@@ -408,6 +408,39 @@ export function toolResultText(output: unknown): string {
 	return String(output);
 }
 
+/**
+ * Agents offer choices as `<options><option>…</option></options>` in their text; the Happier
+ * apps show them as buttons that send the option as the next message. Returns the text without
+ * those blocks, and the options in order.
+ */
+export function splitOptions(text: string): { text: string; options: string[] } {
+	const options: string[] = [];
+	const rest = text.replace(/<options>([\s\S]*?)<\/options>/g, (_m, inner: string) => {
+		for (const m of inner.matchAll(/<option>([\s\S]*?)<\/option>/g)) {
+			const option = (m[1] ?? "").trim();
+			if (option) options.push(option);
+		}
+		return "";
+	});
+	return { text: rest.trimEnd(), options };
+}
+
+/** The choices the agent offered in its latest turn, if any. */
+export function latestOptions(t: Transcript): string[] {
+	const rows = t.list();
+	for (let i = rows.length - 1; i >= 0; i--) {
+		const items = rows[i]!.items;
+		if (items[0]?.kind === "user") return [];
+		for (let j = items.length - 1; j >= 0; j--) {
+			const item = items[j]!;
+			if (item.kind !== "text") continue;
+			const { options } = splitOptions(item.text);
+			if (options.length > 0) return options;
+		}
+	}
+	return [];
+}
+
 // --- ordered transcript store ------------------------------------------------
 
 export interface Row {

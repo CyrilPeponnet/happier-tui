@@ -1,6 +1,6 @@
 {
   "name": "happier-tui",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Terminal client for Happier agent sessions, with bell and notification support for tmux, cmux and other terminals",
   "scripts": {
     "test": "node --import tsx --test test/*.test.ts",

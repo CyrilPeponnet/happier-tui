@@ -80,14 +80,33 @@ Active sessions grouped by machine. Type to search by title, host, agent or path
 | `ctrl+s` | back to the start screen |
 | `alt+↑` / `alt+↓` | previous / next active session |
 | `ctrl+r` | answer a pending permission request or agent question |
-| `ctrl+o` / `ctrl+t` | expand tool output / show or hide thinking |
+| `ctrl+o` / `ctrl+t` | expand tool calls and their output / show or hide thinking |
 | `pgup` / `pgdn`, mouse wheel | scroll; reaching the top loads earlier history |
 | `ctrl+shift+f` | search the transcript |
 | `ctrl+c` twice, `ctrl+d` | quit |
 
-Slash commands: `/sessions`, `/new-session`, `/model`, `/mode`, `/abort`, `/stop-session`,
-`/archive`, `/reload`, `/keys`, `/quit`. Anything else starting with `/` goes to the agent, whose
-own commands are offered in autocomplete.
+Type `@` to mention a file: completion lists the files of the session's folder on its machine
+(through the daemon's ripgrep, so `.gitignore` applies).
+
+| Command | |
+| --- | --- |
+| `/model`, `/effort` | change the model, and its thinking level when it has one |
+| `/mode` | the agent's own modes (when it reports any) and the permission mode |
+| `/queue` | edit or cancel messages still waiting to be sent |
+| `/tree` | branch into a new session from an earlier message, which is put back in the editor to rewrite (Codex sessions can also roll back in place) |
+| `/goal [text\|clear]` | show, set or clear the session's goal (Claude, Codex) |
+| `/limit` | after a usage limit: resume automatically when it resets, or check now |
+| `/rename` | rename the session |
+| `/sessions`, `/new-session`, `/abort`, `/stop-session`, `/archive`, `/reload`, `/keys`, `/quit` | |
+
+Anything else starting with `/` goes to the agent, whose own commands are offered in
+autocomplete. Model, mode and thinking-level changes apply from your next message.
+
+Above the editor, the TUI shows what needs you or is pending: permission requests and questions,
+messages waiting in the queue, the session's goal and a usage-limit wait. Once a turn is over, its tool calls
+fold into one line and the turn ends with how long it took; a subagent's work shows as one line
+under the tool call that started it. Click a folded line to unfold it, or a tool to see all its
+output; `ctrl+o` unfolds everything.
 
 ## Knowing when an agent needs you
 
@@ -121,16 +140,20 @@ src/new-session.ts          the new-session wizard
 src/happier/config.ts       server profile and credentials written by the Happier CLI
 src/happier/crypto.ts       content encryption (AES-256-GCM data keys, legacy secretbox)
 src/happier/client.ts       relay client: sessions, transcripts, prompts, RPC, realtime
+src/happier/controls.ts     modes, thinking level, goal and usage limit, as kept in session metadata
 src/happier/transcript.ts   decrypted records → display items (Claude, ACP, Codex formats)
-src/ui/                     start screen, transcript view, picker, logo, notifications, theme
+src/ui/                     start screen, transcript view, picker, @ completion, logo, notifications, theme
 ```
 
 - **Reading.** Sessions, transcripts and machines come over HTTP and are decrypted locally with
   per-session keys, unwrapped with the account key from the CLI's credentials.
 - **Live updates.** One Socket.IO connection carries new messages, session state and streamed text.
-- **Prompts** go to the relay's pending queue; an inactive session is resumed by its machine.
-- **Interrupting, answering permissions, browsing directories and starting sessions** are encrypted
-  calls relayed to the agent or to the machine's daemon.
+- **Prompts** go to the relay's pending queue, where they can still be edited or cancelled until
+  the agent takes them; an inactive session is resumed by its machine.
+- **Model, mode, thinking level and title** are written to the session's encrypted metadata, which
+  the agent reads, as the Happier app does.
+- **Interrupting, answering permissions, listing files, branching, goals, usage limits and starting
+  sessions** are encrypted calls relayed to the agent or to the machine's daemon.
 
 The Happier protocol is not a published, versioned API. This client follows the Happier sources as
 of CLI 0.2.20, so a relay or CLI upgrade may require changes here.
@@ -138,8 +161,10 @@ of CLI 0.2.20, so a relay or CLI upgrade may require changes here.
 ## Limits
 
 - Direct sessions (transcript kept on the machine, not the relay) are listed but show no transcript.
-- Subagent transcripts, attachments and images are not displayed.
-- `/model` lists the agent's models; per-model options such as reasoning effort are not exposed.
+- Images and attachments are neither shown nor sent.
+- Of the per-model options, only the thinking level is offered.
+- Out of scope, as the Happier app covers them: git, terminals, file browsing, moving sessions
+  between machines.
 
 ## Development
 

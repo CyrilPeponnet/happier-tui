@@ -68,6 +68,7 @@ Active sessions grouped by machine. Type to search by title, host, agent or path
 | --- | --- |
 | `↑` `↓`, `enter` | select, open |
 | `ctrl+n` | new session: machine → agent → directory |
+| `ctrl+x` | stop the selected session's agent, archive the session, or both |
 | `tab` | show or hide inactive sessions |
 | `esc` | clear the search, then go back to the open session |
 

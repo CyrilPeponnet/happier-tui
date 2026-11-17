@@ -200,6 +200,10 @@ export class App {
 		});
 		this.home.onOpen = (id) => void this.openSession(id);
 		this.home.onNew = () => this.run(() => this.newSession());
+		this.home.onManage = (id) => {
+			const s = this.client.sessions.get(id);
+			if (s) this.run(() => this.manageSession(s));
+		};
 		this.home.onToggleInactive = () => {
 			this.showInactive = !this.showInactive;
 			this.tui.requestRender();
@@ -812,26 +816,50 @@ export class App {
 			}
 			case "stop-session": {
 				if (!s) return;
-				if (!(await this.confirm(`Stop the agent process for "${sessionTitle(s)}"?`))) return;
-				await this.client.stopSession(s);
-				this.flash("Stop requested.", "info");
+				if (await this.confirm(`Stop the agent process for "${sessionTitle(s)}"?`)) await this.endSession(s, "stop");
 				return;
 			}
 			case "archive": {
 				if (!s) return;
-				if (!(await this.confirm(`Archive "${sessionTitle(s)}"?`))) return;
-				try {
-					await this.client.archive(s);
-				} catch (e) {
-					if (e instanceof HappierError && e.code === "session-active") {
-						throw new HappierError("Session is still running — /stop-session first, then /archive.");
-					}
-					throw e;
-				}
-				this.flash("Archived.", "info");
+				if (await this.confirm(`Archive "${sessionTitle(s)}"?`)) await this.endSession(s, "archive");
 				return;
 			}
 		}
+	}
+
+	/** ctrl+x in the session list: stop a session's agent, archive the session, or both. */
+	private async manageSession(s: Session): Promise<void> {
+		const how = await this.pick({
+			title: `End "${oneLine(sessionTitle(s))}"`,
+			noFilter: true,
+			items: s.active
+				? [
+						{ value: "stop", label: "Stop the agent", description: "the session stays listed as inactive" },
+						{ value: "stop-archive", label: "Stop and archive", description: "remove it from the list" },
+					]
+				: [{ value: "archive", label: "Archive", description: "remove it from the list" }],
+		});
+		if (how === "stop" || how === "stop-archive" || how === "archive") await this.endSession(s, how);
+	}
+
+	private async endSession(s: Session, how: "stop" | "stop-archive" | "archive"): Promise<void> {
+		if (how !== "archive") {
+			await this.client.stopSession(s);
+			if (how === "stop") return this.flash("Stop requested.", "info");
+			this.flash("Stopping…", "info");
+			if (!(await this.client.waitStopped(s.id))) {
+				throw new HappierError("The agent is still running; archive the session once it has stopped.");
+			}
+		}
+		try {
+			await this.client.archive(s);
+		} catch (e) {
+			if (e instanceof HappierError && e.code === "session-active") {
+				throw new HappierError("Session is still running — stop it first (/stop-session, or ctrl+x in the session list).");
+			}
+			throw e;
+		}
+		this.flash("Archived.", "info");
 	}
 
 	private async abort(): Promise<void> {

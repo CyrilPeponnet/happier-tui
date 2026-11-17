@@ -538,6 +538,16 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 		return this.sessions.get(id);
 	}
 
+	/** Waits up to ~15 s for a stopped session to be reported inactive; whether it was. */
+	async waitStopped(id: string): Promise<boolean> {
+		for (let i = 0; i < 30; i++) {
+			const s = await this.refreshSession(id).catch(() => undefined);
+			if (!s?.active) return true;
+			await new Promise((r) => setTimeout(r, 500));
+		}
+		return false;
+	}
+
 	/** Selects one of the agent's own modes (ACP agents); null returns to the agent's default. */
 	setMode(session: Session, modeId: string | null): Promise<Session> {
 		return this.updateMetadata(session, (m) => withModeOverride(m, modeId));

@@ -55,6 +55,8 @@ export class Home implements Component, Focusable {
 	onOpen?: (sessionId: string) => void;
 	onNew?: () => void;
 	onToggleInactive?: () => void;
+	/** ctrl+x on a session: stop or archive it. */
+	onManage?: (sessionId: string) => void;
 	/** Escape with nothing to clear: return to the open session, if any. */
 	onBack?: () => void;
 
@@ -167,6 +169,11 @@ export class Home implements Component, Focusable {
 			this.onToggleInactive?.();
 			return;
 		}
+		if (matchesKey(data, Key.ctrl("x"))) {
+			const entry = entries[this.selectedIndex(entries)];
+			if (entry?.kind === "session") this.onManage?.(entry.session.id);
+			return;
+		}
 		if (matchesKey(data, Key.enter)) {
 			const entry = entries[this.selectedIndex(entries)];
 			if (entry?.kind === "session") this.onOpen?.(entry.session.id);
@@ -218,7 +225,7 @@ export class Home implements Component, Focusable {
 			body.push(this.renderEntry(entry, i === selected, st, block, titleWidth));
 		});
 
-		const foot = ["", c.faint("↑↓ select · enter open · type to search · ctrl+n new · tab inactive · esc back · ctrl+c quit")];
+		const foot = ["", c.faint("↑↓ select · enter open · type to search · ctrl+n new · ctrl+x stop/archive · tab inactive · esc back · ctrl+c quit")];
 
 		// Keep the selection on screen when the list is taller than the terminal.
 		const room = Math.max(3, st.rows - head.length - foot.length);

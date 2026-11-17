@@ -178,6 +178,21 @@ npm test            # unit tests
 npm run typecheck
 ```
 
+### Releasing
+
+Pushing a version tag publishes the package to npm and creates the GitHub release
+(`.github/workflows/release.yml`):
+
+```bash
+npm version patch        # or minor / major: bumps package.json, commits, tags vX.Y.Z
+git push --follow-tags
+```
+
+The workflow logs in to npm through
+[trusted publishing](https://docs.npmjs.com/trusted-publishers), so there is no npm token to
+store: the package's settings on npmjs.com name this repository and `release.yml` as its
+trusted publisher.
+
 ## License
 
 [MIT](LICENSE)

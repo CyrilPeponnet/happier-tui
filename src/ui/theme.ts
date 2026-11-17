@@ -81,4 +81,10 @@ export function ago(ms: number, now = Date.now()): string {
 	return `${Math.floor(s / 86400)}d`;
 }
 
+/** "5m ago", or "just now". */
+export function agoText(ms: number, now = Date.now()): string {
+	const a = ago(ms, now);
+	return a === "now" ? "just now" : `${a} ago`;
+}
+
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

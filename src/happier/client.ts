@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { io, type Socket } from "socket.io-client";
 import type { AccountKeys, HappierConfig } from "./config.js";
+import { effortOverride, usageLimit, withConfigOverride, withModeOverride } from "./controls.js";
 import {
 	b64decode,
 	b64encode,
@@ -75,6 +76,15 @@ export interface MessageRow {
 	sidechainId: string | null;
 	/** Decrypted record, or null when it could not be decrypted. */
 	record: unknown;
+}
+
+/** A prompt waiting in the session's pending queue. */
+export interface QueuedPrompt {
+	localId: string;
+	text: string;
+	createdAt: number;
+	/** Being handed to the agent: it can no longer be edited or cancelled. */
+	delivering: boolean;
 }
 
 export interface MessagePage {
@@ -170,6 +180,29 @@ export function pendingRequests(s: Session): PermissionRequest[] {
 /** True while the agent is working on a turn. */
 export function isBusy(s: Session): boolean {
 	return s.active && (s.thinking || s.latestTurnStatus === "in_progress");
+}
+
+/** The relay's queue conflicts, in words. */
+function queueError(e: unknown): unknown {
+	if (e instanceof HappierError && (e.status === 404 || e.status === 409)) {
+		return new HappierError("The message was already handed to the agent.", e.code, e.status);
+	}
+	return e;
+}
+
+/** Error codes worth saying in words. */
+const RPC_ERRORS: Array<[RegExp, string]> = [
+	[/^unsupported_session_runtime_method|METHOD_NOT_AVAILABLE|not_supported|unsupported/i, "this agent does not support it"],
+	[/^usage_limit_issue_unavailable/, "no usage limit is in effect for this session"],
+];
+
+/** Throws the error an RPC reported as `{ok:false, …}`. */
+function expectOk(res: Obj | null | undefined, what: string): void {
+	if (!res || res.ok !== false) return;
+	const raw = [res.errorCode, res.error, res.errorMessage].find((v) => typeof v === "string" && v) as string | undefined;
+	const known = raw && RPC_ERRORS.find(([re]) => re.test(raw))?.[1];
+	const detail = known ?? [res.errorMessage, res.error, res.errorCode].find((v) => typeof v === "string" && v);
+	throw new HappierError(`${what}: ${detail ?? "refused by the agent"}`, typeof res.errorCode === "string" ? res.errorCode : undefined);
 }
 
 const PLAIN_MACHINE_MARKER = Buffer.from(JSON.stringify({ t: "plain", v: null })).toString("base64");
@@ -377,24 +410,16 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 	 * Returns the localId under which the prompt will appear in the transcript.
 	 */
 	async sendMessage(session: Session, text: string): Promise<{ localId: string; record: Obj }> {
-		if (!session.key) throw new HappierError("No key available to write to this session.");
 		if (session.archivedAt) throw new HappierError("Session is archived.");
 		const localId = randomUUID();
-		const meta: Obj = { sentFrom: "cli", source: "ui" };
-		const mode = session.metadata.permissionMode;
-		if (typeof mode === "string" && mode) meta.permissionMode = mode;
-		const override = isObj(session.metadata.modelOverrideV1) ? session.metadata.modelOverrideV1.modelId : undefined;
-		if (typeof override === "string" && override && override !== "default") meta.model = override;
-
-		const record: Obj = { role: "user", content: { type: "text", text }, meta };
+		const record = this.promptRecord(session, text);
 		const body: Obj = {
 			localId,
 			messageRole: "user",
 			requestedAction: { v: 1, kind: session.active ? "steer_if_active" : "send_now" },
+			...this.promptBody(session, record),
 		};
 		if (!session.active) body.resumeWhenAvailable = true;
-		if (session.key.variant === "plain") body.content = { t: "plain", v: record };
-		else body.ciphertext = b64encode(encryptBytes(session.key, record));
 
 		await this.http("POST", `/v2/sessions/${encodeURIComponent(session.id)}/pending`, body);
 		if (session.active) {
@@ -402,6 +427,28 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 			void this.sessionRpc(session, "session.pendingQueue.wake.v1", { protocolVersion: 1 }, 10_000).catch(() => {});
 		}
 		return { localId, record };
+	}
+
+	/** A user prompt record, carrying the session's current mode, model and effort choices. */
+	private promptRecord(session: Session, text: string): Obj {
+		const meta: Obj = { sentFrom: "cli", source: "ui" };
+		const mode = session.metadata.permissionMode;
+		if (typeof mode === "string" && mode) meta.permissionMode = mode;
+		const override = isObj(session.metadata.modelOverrideV1) ? session.metadata.modelOverrideV1.modelId : undefined;
+		if (typeof override === "string" && override && override !== "default") meta.model = override;
+		// Claude takes the effort with each prompt as well as from metadata.
+		const effort = effortOverride(session.metadata);
+		if (effort && session.metadata.flavor === "claude") meta.reasoningEffort = effort;
+
+		return { role: "user", content: { type: "text", text }, meta };
+	}
+
+	/** The encrypted (or plain) content fields of a pending-queue write. */
+	private promptBody(session: Session, record: Obj): Obj {
+		if (!session.key) throw new HappierError("No key available to write to this session.");
+		return session.key.variant === "plain"
+			? { content: { t: "plain", v: record } }
+			: { ciphertext: b64encode(encryptBytes(session.key, record)) };
 	}
 
 	/** Interrupts the current turn. Resolves false when no runner is attached. */
@@ -480,6 +527,137 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 			const prev = isObj(m.modelOverrideV1) && typeof m.modelOverrideV1.updatedAt === "number" ? m.modelOverrideV1.updatedAt : 0;
 			return { ...m, modelOverrideV1: { v: 1, updatedAt: Math.max(Date.now(), prev + 1), modelId } };
 		});
+	}
+
+	/** Waits (up to ~10 s) for a session just created elsewhere to be readable here. */
+	async waitForSession(id: string): Promise<Session | undefined> {
+		for (let i = 0; i < 20 && !this.sessions.has(id); i++) {
+			await this.refreshSession(id).catch(() => undefined);
+			if (!this.sessions.has(id)) await new Promise((r) => setTimeout(r, 500));
+		}
+		return this.sessions.get(id);
+	}
+
+	/** Selects one of the agent's own modes (ACP agents); null returns to the agent's default. */
+	setMode(session: Session, modeId: string | null): Promise<Session> {
+		return this.updateMetadata(session, (m) => withModeOverride(m, modeId));
+	}
+
+	/** Sets a model or agent option such as `reasoning_effort`; applies from the next prompt. */
+	setOption(session: Session, id: string, value: string): Promise<Session> {
+		return this.updateMetadata(session, (m) => withConfigOverride(m, id, value));
+	}
+
+	rename(session: Session, title: string): Promise<Session> {
+		return this.updateMetadata(session, (m) => ({ ...m, summary: { text: title, updatedAt: Date.now() } }));
+	}
+
+	// --- pending queue ---
+
+	async listQueue(session: Session): Promise<QueuedPrompt[]> {
+		const data = await this.http<{ pending?: Obj[] }>("GET", `/v2/sessions/${encodeURIComponent(session.id)}/pending`);
+		return (data.pending ?? [])
+			.filter((p) => p.status !== "discarded" && typeof p.localId === "string")
+			.map((p) => {
+				const record = this.openEnvelope(session.key, p.content);
+				const content = isObj(record) && isObj(record.content) ? record.content : undefined;
+				const meta = isObj(record) && isObj(record.meta) ? record.meta : undefined;
+				const text = typeof meta?.displayText === "string" ? meta.displayText : typeof content?.text === "string" ? content.text : "";
+				const delivery = isObj(p.deliveryStatus) ? p.deliveryStatus.status : undefined;
+				return {
+					localId: String(p.localId),
+					text,
+					createdAt: typeof p.createdAt === "number" ? p.createdAt : 0,
+					delivering: delivery === "delivering" || delivery === "external_handoff",
+				};
+			});
+	}
+
+	async cancelQueued(session: Session, localId: string): Promise<void> {
+		await this.http("DELETE", `/v2/sessions/${encodeURIComponent(session.id)}/pending/${encodeURIComponent(localId)}`).catch((e) => {
+			if (!(e instanceof HappierError && e.status === 404)) throw queueError(e); // 404: already delivered or gone
+		});
+	}
+
+	async editQueued(session: Session, localId: string, text: string): Promise<void> {
+		const body = this.promptBody(session, this.promptRecord(session, text));
+		await this.http("PATCH", `/v2/sessions/${encodeURIComponent(session.id)}/pending/${encodeURIComponent(localId)}`, {
+			...body,
+			messageRole: "user",
+		}).catch((e) => {
+			throw queueError(e);
+		});
+	}
+
+	// --- branching ---
+
+	/**
+	 * Forks the session into a new one holding the conversation up to `seq` (inclusive), or all of
+	 * it. Resolves the new session's id. Agents without native forking get a replayed summary.
+	 */
+	async fork(session: Session, seq: number | null): Promise<string> {
+		const machine = await this.sessionMachine(session);
+		const res = (await this.machineRpc(
+			machine,
+			"session.fork",
+			{
+				v: 1,
+				parentSessionId: session.id,
+				forkPoint: seq === null ? { type: "latest" } : { type: "seq", upToSeqInclusive: seq },
+				requestId: randomUUID(),
+			},
+			180_000,
+		)) as Obj;
+		expectOk(res, "Fork failed");
+		if (typeof res.childSessionId !== "string") throw new HappierError("Fork failed: no session returned.");
+		return res.childSessionId;
+	}
+
+	/** Undoes the conversation from a user message onwards (agents that support it: Codex). */
+	async rollback(session: Session, userMessageSeq: number): Promise<void> {
+		const res = (await this.sessionRpc(session, "session.rollback", {
+			v: 1,
+			target: { type: "before_user_message", userMessageSeq },
+		})) as Obj;
+		expectOk(res, "Rollback failed");
+	}
+
+	// --- goal and usage limit ---
+
+	/** Sets (objective) or clears (null) the session's goal. */
+	async setGoal(session: Session, objective: string | null): Promise<void> {
+		const params = objective === null ? {} : { objective, status: "active" };
+		const res = session.active
+			? await this.sessionRpc(session, objective === null ? "session.goal.clear" : "session.goal.set", params)
+			: await this.machineRpc(await this.sessionMachine(session), objective === null ? "daemon.sessionGoal.clear" : "daemon.sessionGoal.set", {
+					...params,
+					sessionId: session.id,
+				});
+		expectOk(res as Obj, "Goal not updated");
+	}
+
+	/**
+	 * Usage-limit recovery: arm automatic resume when the limit resets, cancel it, or check now.
+	 * Goes to the agent while it runs, to its machine's daemon otherwise.
+	 */
+	async usageLimitAction(session: Session, action: "waitResume.enable" | "waitResume.cancel" | "checkNow"): Promise<Obj> {
+		const u = usageLimit(session.metadata);
+		const params: Obj = { sessionId: session.id };
+		if (action === "waitResume.cancel") Object.assign(params, { issueFingerprint: u?.issueFingerprint ?? null, armedAtMs: u?.armedAtMs, runtimeAuthRecoveryAttemptId: u?.attemptId });
+		else if (u?.issueFingerprint && action === "waitResume.enable") params.issueFingerprint = u.issueFingerprint;
+		const res = (session.active
+			? await this.sessionRpc(session, `session.usageLimit.${action}`, params)
+			: await this.machineRpc(await this.sessionMachine(session), `daemon.sessionUsageLimit.${action}`, params)) as Obj;
+		expectOk(res, "Usage limit");
+		return res;
+	}
+
+	private async sessionMachine(session: Session): Promise<Machine> {
+		const machineId = session.metadata.machineId;
+		const machine = typeof machineId === "string" ? await this.getMachine(machineId) : undefined;
+		if (!machine) throw new HappierError("The session's machine is unknown.");
+		if (!machine.active) throw new HappierError(`${machine.metadata.displayName ?? machine.metadata.host ?? "The machine"} is offline.`);
+		return machine;
 	}
 
 	async archive(session: Session): Promise<void> {

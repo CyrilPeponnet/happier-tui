@@ -57,3 +57,12 @@ export function questionsOf(req: PermissionRequest): Array<{ question: string; o
 	}
 	return out;
 }
+
+/** A future time as "14:30 (in 2h 5m)", or "now" when it has passed. */
+export function untilText(at: number, now = Date.now()): string {
+	const minutes = Math.ceil((at - now) / 60_000);
+	if (minutes <= 0) return "now";
+	const clock = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	const left = minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
+	return `${clock} (in ${left})`;
+}

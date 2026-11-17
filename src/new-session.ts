@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { type HappierClient, HappierError, type Machine } from "./happier/client.js";
 import { errorText, machineName, shortHost } from "./ui/format.js";
 import type { PickerOptions } from "./ui/picker.js";
-import { ago, shortPath } from "./ui/theme.js";
+import { agoText, shortPath } from "./ui/theme.js";
 
 const FALLBACK_AGENTS = ["claude", "codex", "opencode", "pi", "gemini"];
 const AGENT_PROBE_WAIT_MS = 4000;
@@ -86,10 +86,7 @@ export class NewSessionFlow {
 			this.ui.flash("Session is starting; it will appear in the list shortly.", "info", 8000);
 			return null;
 		}
-		for (let i = 0; i < 20 && !this.ui.client.sessions.has(res.sessionId); i++) {
-			await this.ui.client.refreshSession(res.sessionId).catch(() => undefined);
-			if (!this.ui.client.sessions.has(res.sessionId)) await new Promise((r) => setTimeout(r, 500));
-		}
+		await this.ui.client.waitForSession(res.sessionId);
 		this.ui.clearNotice();
 		return res.sessionId;
 	}
@@ -149,7 +146,7 @@ export class NewSessionFlow {
 			title: "New session · directory",
 			items: [
 				{ value: "\0browse", label: "Browse…", description: "pick a folder on the machine" },
-				...recents.map(([p, at]) => ({ value: p, label: shortPath(p, home), description: `used ${ago(at)} ago` })),
+				...recents.map(([p, at]) => ({ value: p, label: shortPath(p, home), description: `used ${agoText(at)}` })),
 			],
 		});
 		if (first !== "\0browse") return first;

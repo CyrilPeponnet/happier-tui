@@ -22,11 +22,13 @@ import {
 	type MessageRow,
 	type PermissionRequest,
 	pendingRequests,
+	type QueuedPrompt,
 	type Session,
 	sessionModels,
 	sessionTitle,
 } from "./happier/client.js";
-import { Transcript } from "./happier/transcript.js";
+import { CLAUDE_EFFORT_LEVELS, effortOverride, isWaitingForLimit, sessionGoal, sessionModes, sessionOptions, usageLimit } from "./happier/controls.js";
+import { type Row, Transcript } from "./happier/transcript.js";
 import {
 	type AttentionState,
 	attentionChange,
@@ -36,11 +38,11 @@ import {
 	notificationSequence,
 } from "./ui/notify.js";
 import { type LocalLaunch, NewSessionFlow } from "./new-session.js";
-import { errorText, justify, machineName, questionsOf, requestSummary, shortHost } from "./ui/format.js";
+import { errorText, justify, machineName, questionsOf, requestSummary, shortHost, untilText } from "./ui/format.js";
 import { SessionAutocomplete } from "./ui/autocomplete.js";
 import { Picker, type PickerOptions } from "./ui/picker.js";
 import { Home, sortSessions, statusGlyph } from "./ui/home.js";
-import { c, clean, editorTheme, shortPath, SPINNER } from "./ui/theme.js";
+import { agoText, c, clean, editorTheme, shortPath, SPINNER } from "./ui/theme.js";
 import { TranscriptView } from "./ui/transcript-view.js";
 
 const PERMISSION_MODES = ["default", "read-only", "safe-yolo", "yolo", "plan"];
@@ -50,8 +52,14 @@ const PRESENCE_IDLE_MS = 3 * 60_000;
 const LOCAL_COMMANDS: SlashCommand[] = [
 	{ name: "sessions", description: "Back to the session list (ctrl+s)" },
 	{ name: "new-session", description: "Start a new agent session on a machine (ctrl+n)" },
-	{ name: "mode", description: "Change the permission mode" },
+	{ name: "mode", description: "Change the agent mode or the permission mode" },
 	{ name: "model", description: "Change the model" },
+	{ name: "effort", description: "Change the thinking level (reasoning effort)" },
+	{ name: "rename", description: "Rename this session" },
+	{ name: "queue", description: "Edit or cancel messages waiting to be sent" },
+	{ name: "tree", description: "Branch into a new session from an earlier message" },
+	{ name: "goal", description: "Show, set or clear the session's goal" },
+	{ name: "limit", description: "After a usage limit: resume automatically, check now" },
 	{ name: "abort", description: "Interrupt the current turn (esc)" },
 	{ name: "stop-session", description: "Stop the session's agent process" },
 	{ name: "archive", description: "Archive this session" },
@@ -130,6 +138,12 @@ export class App {
 	private timer: NodeJS.Timeout | null = null;
 	private commandsKey = "";
 	private readonly files = new Map<string, { at: number; list: Promise<string[]> }>();
+	/** Prompts waiting in each session's pending queue, as last fetched. */
+	private readonly queued = new Map<string, QueuedPrompt[]>();
+	/** The session's pending count when its queue was last fetched. */
+	private readonly queuedCount = new Map<string, number>();
+	/** A queued prompt being edited in the editor; enter saves it back to the queue. */
+	private editingQueued: { sessionId: string; localId: string } | null = null;
 	private resolveDone: () => void = () => {};
 	readonly done = new Promise<void>((r) => {
 		this.resolveDone = r;
@@ -305,6 +319,7 @@ export class App {
 			this.noteAttention(s);
 			if (s.id === this.currentId) {
 				if (isBusy(s)) this.awaiting.delete(s.id);
+				if (s.pendingCount !== (this.queuedCount.get(s.id) ?? 0)) void this.refreshQueue(s);
 				this.refreshCommands(s);
 				this.promptForRequests(s);
 			}
@@ -453,8 +468,17 @@ export class App {
 			this.view.hasEarlier = entry.hasEarlier;
 			this.scroll.scrollToEnd();
 		}
+		if (s.pendingCount > 0) void this.refreshQueue(s);
 		this.promptForRequests(s);
 		this.tui.requestRender();
+	}
+
+	private async refreshQueue(s: Session): Promise<QueuedPrompt[]> {
+		this.queuedCount.set(s.id, s.pendingCount);
+		const list = await this.client.listQueue(s).catch(() => this.queued.get(s.id) ?? []);
+		this.queued.set(s.id, list);
+		this.tui.requestRender();
+		return list;
 	}
 
 	/** Loads a subagent's transcript the first time its tool call is shown. */
@@ -576,7 +600,14 @@ export class App {
 		}
 		if (matchesKey(data, Key.escape)) {
 			const s = this.current();
-			if (this.editor.isShowingAutocomplete() || !s || !this.busy(s)) return false;
+			if (this.editor.isShowingAutocomplete()) return false;
+			if (this.editingQueued) {
+				this.editingQueued = null;
+				this.editor.setText("");
+				this.flash("Stopped editing; the queued message is unchanged.", "info");
+				return true;
+			}
+			if (!s || !this.busy(s)) return false;
 			void this.abort();
 			return true;
 		}
@@ -642,6 +673,19 @@ export class App {
 		}
 		const s = this.current();
 		const entry = s && this.entries.get(s.id);
+		const editing = this.editingQueued;
+		if (s && editing?.sessionId === s.id) {
+			this.editingQueued = null;
+			try {
+				await this.client.editQueued(s, editing.localId, text);
+				this.flash("Queued message updated.", "info");
+			} catch (e) {
+				this.editor.setText(raw);
+				this.flash(`Not updated: ${errorText(e)}`, "error", 8000);
+			}
+			void this.refreshQueue(s);
+			return;
+		}
 		if (!s || !entry) {
 			this.flash("No session open — ctrl+s for the session list.", "warn");
 			this.editor.setText(raw);
@@ -685,22 +729,29 @@ export class App {
 				this.flash("Reloaded.", "info");
 				return;
 			}
-			case "mode": {
+			case "mode":
+				return s && this.chooseMode(s, arg);
+			case "effort":
+				return s && this.chooseEffort(s, arg);
+			case "rename": {
 				if (!s) return;
-				const current = typeof s.metadata.permissionMode === "string" ? s.metadata.permissionMode : "default";
-				const mode = PERMISSION_MODES.includes(arg)
-					? arg
-					: await this.pick({
-							title: "Permission mode",
-							noFilter: true,
-							selected: current,
-							items: PERMISSION_MODES.map((m) => ({ value: m, label: m, description: m === current ? "current" : "" })),
-						});
-				if (!mode) return;
-				await this.client.setPermissionMode(s, mode);
-				this.flash(`Permission mode: ${mode} (applies from your next message)`, "info");
+				if (!arg.trim()) {
+					this.editor.setText(`/rename ${sessionTitle(s)}`);
+					this.flash("Edit the title and press enter.", "info");
+					return;
+				}
+				await this.client.rename(s, arg.trim());
+				this.flash(`Renamed to "${arg.trim()}".`, "info");
 				return;
 			}
+			case "queue":
+				return s && this.manageQueue(s);
+			case "tree":
+				return s && this.branch(s);
+			case "goal":
+				return s && this.goal(s, arg.trim());
+			case "limit":
+				return s && this.limit(s);
 			case "model": {
 				if (!s) return;
 				const { current, available: reported } = sessionModels(s);
@@ -769,6 +820,199 @@ export class App {
 		this.awaiting.delete(s.id);
 		const ok = await this.client.abort(s);
 		this.flash(ok ? "Interrupt sent." : "Nothing to interrupt (no agent attached).", ok ? "info" : "warn");
+	}
+
+	// --- session controls ---
+
+	/** Agent modes (when the agent reports its own) and permission modes, in one list. */
+	private async chooseMode(s: Session, arg: string): Promise<void> {
+		const agent = sessionModes(s.metadata);
+		const permission = typeof s.metadata.permissionMode === "string" ? s.metadata.permissionMode : "default";
+		const items = [
+			...agent.available.map((m) => ({
+				value: `agent:${m.value}`,
+				label: m.name,
+				description: ["agent mode", m.value === agent.current ? "current" : "", m.description].filter(Boolean).join(" · "),
+			})),
+			...PERMISSION_MODES.map((m) => ({ value: `perm:${m}`, label: m, description: `permissions${m === permission ? " · current" : ""}` })),
+		];
+		const byArg = arg && items.find((i) => i.value.endsWith(`:${arg}`) || i.label === arg)?.value;
+		const choice =
+			byArg ||
+			(await this.pick({
+				title: "Mode",
+				noFilter: items.length < 10,
+				selected: agent.current ? `agent:${agent.current}` : `perm:${permission}`,
+				items,
+			}));
+		if (!choice) return;
+		const value = choice.slice(choice.indexOf(":") + 1);
+		if (choice.startsWith("agent:")) await this.client.setMode(s, value);
+		else await this.client.setPermissionMode(s, value);
+		this.flash(`Mode: ${value} (applies from your next message)`, "info");
+	}
+
+	private async chooseEffort(s: Session, arg: string): Promise<void> {
+		const model = sessionModels(s).current;
+		const reported = sessionOptions(s.metadata, model).find((o) => o.id === "reasoning_effort");
+		// Claude takes an effort even when the session did not publish the model's levels.
+		const effort =
+			reported ??
+			(s.metadata.flavor === "claude"
+				? { current: effortOverride(s.metadata) ?? "", choices: CLAUDE_EFFORT_LEVELS.map((l) => ({ value: l, name: l })) }
+				: undefined);
+		if (!effort) {
+			this.flash(`${model || "This model"} does not report thinking levels.`, "warn");
+			return;
+		}
+		const value =
+			effort.choices.find((ch) => ch.value === arg || ch.name.toLowerCase() === arg.toLowerCase())?.value ??
+			(await this.pick({
+				title: `Thinking level · ${model}`,
+				hint: reported ? undefined : "this session did not report its levels; the model may not take them all",
+				noFilter: true,
+				selected: effort.current,
+				items: effort.choices.map((ch) => ({ value: ch.value, label: ch.name, description: ch.value === effort.current ? "current" : "" })),
+			}));
+		if (!value || value === effort.current) return;
+		await this.client.setOption(s, "reasoning_effort", value);
+		this.flash(`Thinking level: ${value} (applies from your next message)`, "info");
+	}
+
+	private async manageQueue(s: Session): Promise<void> {
+		const queued = await this.refreshQueue(s);
+		if (queued.length === 0) {
+			this.flash("No message is waiting to be sent.", "info");
+			return;
+		}
+		const id = await this.pick({
+			title: `Waiting to be sent (${queued.length})`,
+			items: queued.map((q) => ({
+				value: q.localId,
+				label: oneLine(q.text),
+				description: q.delivering ? "being delivered" : agoText(q.createdAt),
+			})),
+		});
+		const q = queued.find((x) => x.localId === id);
+		if (!q) return;
+		if (q.delivering) {
+			this.flash("That message is already being handed to the agent; it can no longer be changed.", "info");
+			return;
+		}
+		const action = await this.pick({
+			title: oneLine(q.text),
+			noFilter: true,
+			items: [
+				{ value: "edit", label: "Edit", description: "load it in the editor; enter saves, esc leaves it as is" },
+				{ value: "cancel", label: "Cancel", description: "remove it from the queue" },
+			],
+		});
+		if (action === "cancel") {
+			await this.client.cancelQueued(s, q.localId);
+			await this.refreshQueue(s);
+			this.flash("Cancelled.", "info");
+		} else if (action === "edit") {
+			this.editingQueued = { sessionId: s.id, localId: q.localId };
+			this.editor.setText(q.text);
+			this.flash("Editing a queued message: enter saves it, esc leaves it unchanged.", "info", 10_000);
+		}
+	}
+
+	/**
+	 * Branches the conversation into a new session, like Pi's /tree: the new session holds what
+	 * came before the chosen message, which is put back in the editor to rewrite. Codex sessions
+	 * can instead be rolled back in place.
+	 */
+	private async branch(s: Session): Promise<void> {
+		const prompts = (this.entries.get(s.id)?.transcript.list() ?? [])
+			.filter((r): r is Row & { seq: number } => r.seq !== undefined && r.items[0]?.kind === "user")
+			.reverse();
+		const textOf = (r: Row) => (r.items[0]?.kind === "user" ? r.items[0].text : "");
+		const choice = await this.pick({
+			title: "Branch from",
+			hint: "a new session continues from just before the message you pick (scroll up first to reach older ones)",
+			maxVisible: 14,
+			items: [
+				{ value: "latest", label: "The whole conversation", description: "copy everything so far" },
+				...prompts.map((r) => ({ value: String(r.seq), label: oneLine(textOf(r)), description: agoText(r.createdAt) })),
+			],
+		});
+		if (!choice) return;
+		const row = prompts.find((r) => String(r.seq) === choice);
+		if (row && s.metadata.flavor === "codex" && s.active) {
+			const how = await this.pick({
+				title: oneLine(textOf(row)),
+				noFilter: true,
+				items: [
+					{ value: "fork", label: "Branch into a new session", description: "this session stays as it is" },
+					{ value: "rollback", label: "Roll back this session", description: "undo this message and everything after it" },
+				],
+			});
+			if (!how) return;
+			if (how === "rollback") {
+				if (!(await this.confirm("Undo this message and everything after it in this session?"))) return;
+				await this.client.rollback(s, row.seq);
+				this.entries.delete(s.id);
+				await this.openSession(s.id);
+				this.editor.setText(textOf(row));
+				this.flash("Rolled back; the message is back in the editor.", "info");
+				return;
+			}
+		}
+		this.flash("Creating the branch…", "info", 180_000);
+		const childId = await this.client.fork(s, row ? row.seq : null);
+		await this.client.waitForSession(childId);
+		this.notice = null;
+		await this.openSession(childId);
+		if (row) this.editor.setText(textOf(row));
+		this.flash(row ? "New branch; rewrite the message and press enter." : "New branch with the whole conversation.", "info", 8000);
+	}
+
+	private async goal(s: Session, arg: string): Promise<void> {
+		if (arg === "clear") {
+			await this.client.setGoal(s, null);
+			this.flash("Goal cleared.", "info");
+			return;
+		}
+		if (arg) {
+			await this.client.setGoal(s, arg);
+			this.flash("Goal set.", "info");
+			return;
+		}
+		const goal = sessionGoal(s.metadata);
+		if (!goal) {
+			this.editor.setText("/goal ");
+			this.flash("Type the goal after /goal and press enter (Claude and Codex sessions).", "info", 8000);
+			return;
+		}
+		const action = await this.pick({
+			title: `Goal · ${goal.status}: ${oneLine(goal.title)}`,
+			noFilter: true,
+			items: [
+				{ value: "edit", label: "Change it" },
+				{ value: "clear", label: "Clear it" },
+			],
+		});
+		if (action === "edit") this.editor.setText(`/goal ${goal.title}`);
+		else if (action === "clear") return this.goal(s, "clear");
+	}
+
+	private async limit(s: Session): Promise<void> {
+		const u = usageLimit(s.metadata);
+		const waiting = isWaitingForLimit(u);
+		const action = await this.pick({
+			title: waiting ? `Waiting for the usage limit${u?.resetAt ? ` to reset at ${untilText(u.resetAt)}` : ""}` : "Usage limit",
+			noFilter: true,
+			items: [
+				...(waiting
+					? [{ value: "waitResume.cancel", label: "Stop waiting", description: "do not resume this session by itself" }]
+					: [{ value: "waitResume.enable", label: "Resume automatically", description: "continue this session when the limit resets" }]),
+				{ value: "checkNow", label: "Check now", description: "resume right away if the limit has reset" },
+			],
+		});
+		if (!action) return;
+		const res = await this.client.usageLimitAction(s, action as "waitResume.enable" | "waitResume.cancel" | "checkNow");
+		this.flash(`Usage limit: ${String(res.status ?? "done").replace(/_/g, " ")}`, "info");
 	}
 
 	// --- overlays ---
@@ -948,6 +1192,28 @@ export class App {
 		const lines: string[] = [];
 		const s = this.current();
 		if (s) {
+			const goal = sessionGoal(s.metadata);
+			if (goal && !["complete", "cancelled"].includes(goal.status)) {
+				const status = goal.reason ? `${goal.status}, ${goal.reason}` : goal.status;
+				lines.push(truncateToWidth(` ${c.accent("◎")} ${c.dim(`goal (${status}):`)} ${clean(oneLine(goal.title))}`, width));
+			}
+			const limit = usageLimit(s.metadata);
+			if (limit) {
+				const when = limit.resetAt ? ` at ${untilText(limit.resetAt)}` : "";
+				const text = isWaitingForLimit(limit)
+					? `Usage limit: resumes by itself${when}`
+					: `Usage limit: ${limit.status}${when} · /limit`;
+				lines.push(` ${c.warn("⏸")} ${c.warn(text)}`);
+			}
+			const queued = this.queued.get(s.id) ?? [];
+			for (const q of queued.slice(0, 3)) {
+				const label = q.delivering ? "⧗ sending:" : "⧗ queued:";
+				lines.push(truncateToWidth(` ${c.dim(label)} ${clean(oneLine(q.text))}`, width));
+			}
+			if (queued.length > 0) {
+				const more = queued.length > 3 ? `+${queued.length - 3} more · ` : "";
+				lines.push(c.faint(`   ${more}/queue to edit or cancel`));
+			}
 			const reqs = pendingRequests(s);
 			const first = reqs[0];
 			if (first) {
@@ -974,12 +1240,14 @@ export class App {
 		parts.push(mode === "yolo" || mode === "bypassPermissions" ? c.err(mode) : c.dim(mode));
 		const model = sessionModels(s).current;
 		if (model) parts.push(c.dim(model));
+		const effort =
+			sessionOptions(s.metadata, model).find((o) => o.id === "reasoning_effort")?.current ?? effortOverride(s.metadata);
+		if (effort) parts.push(c.dim(`thinking ${effort}`));
 		const usage = this.entries.get(s.id)?.transcript.usage;
 		if (usage?.contextUsed && usage.contextWindow) {
 			const pct = Math.round((usage.contextUsed / usage.contextWindow) * 100);
 			parts.push((pct >= 85 ? c.warn : c.dim)(`ctx ${pct}%`));
 		}
-		if (s.pendingCount > 0) parts.push(c.dim(`${s.pendingCount} queued`));
 		let state: string;
 		if (this.busy(s)) state = c.warn(`${SPINNER[this.frame % SPINNER.length]} working`) + c.dim(" · esc to interrupt");
 		else if (!s.active) state = c.dim("inactive · sending resumes it");
@@ -993,6 +1261,7 @@ export class App {
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => !!v && typeof v === "object" && !Array.isArray(v);
 
+const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 function isDirect(s: Session): boolean {
 	return isObj(s.metadata.directSessionV1) && s.seq === 0;
 }

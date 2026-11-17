@@ -533,6 +533,22 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 		};
 	}
 
+	/**
+	 * Files under the session's directory, relative to it, as listed by ripgrep on the session's
+	 * machine (so .gitignore is honoured). This is how the Happier app indexes `@` mentions.
+	 */
+	async listFiles(session: Session): Promise<string[]> {
+		const machineId = session.metadata.machineId;
+		const machine = typeof machineId === "string" ? await this.getMachine(machineId) : undefined;
+		const cwd = session.metadata.path;
+		if (!machine?.active || typeof cwd !== "string") return [];
+		const res = (await this.machineRpc(machine, "ripgrep", { args: ["--files", "--follow"], cwd }, 20_000)) as Obj;
+		if (res?.success !== true || typeof res.stdout !== "string") {
+			throw new HappierError(typeof res?.error === "string" ? res.error : "Cannot list files");
+		}
+		return res.stdout.split("\n").filter(Boolean).slice(0, 50_000);
+	}
+
 	/** Agent backends whose CLI is installed on the machine (best effort). */
 	async detectAgents(machine: Machine): Promise<string[]> {
 		const res = (await this.machineRpc(machine, "capabilities.detect", { checklistId: "new-session" }, 120_000)) as Obj;

@@ -1,6 +1,5 @@
 import { appendFileSync } from "node:fs";
 import {
-	CombinedAutocompleteProvider,
 	type Component,
 	Editor,
 	isKeyRelease,
@@ -38,6 +37,7 @@ import {
 } from "./ui/notify.js";
 import { type LocalLaunch, NewSessionFlow } from "./new-session.js";
 import { errorText, justify, machineName, questionsOf, requestSummary, shortHost } from "./ui/format.js";
+import { SessionAutocomplete } from "./ui/autocomplete.js";
 import { Picker, type PickerOptions } from "./ui/picker.js";
 import { Home, sortSessions, statusGlyph } from "./ui/home.js";
 import { c, clean, editorTheme, shortPath, SPINNER } from "./ui/theme.js";
@@ -129,6 +129,7 @@ export class App {
 	private connection: "connecting" | "connected" | "disconnected" = "connecting";
 	private timer: NodeJS.Timeout | null = null;
 	private commandsKey = "";
+	private readonly files = new Map<string, { at: number; list: Promise<string[]> }>();
 	private resolveDone: () => void = () => {};
 	readonly done = new Promise<void>((r) => {
 		this.resolveDone = r;
@@ -507,7 +508,20 @@ export class App {
 		const key = `${s.id}:${remote.length}`;
 		if (key === this.commandsKey) return;
 		this.commandsKey = key;
-		this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider([...LOCAL_COMMANDS, ...remote], process.cwd()));
+		void this.sessionFiles(s); // warm the `@` index; a large tree takes seconds to list
+		this.editor.setAutocompleteProvider(new SessionAutocomplete([...LOCAL_COMMANDS, ...remote], () => this.sessionFiles(s)));
+	}
+
+	/** The session's file list for `@` completion, fetched once per session and kept for a minute. */
+	private sessionFiles(s: Session): Promise<string[]> {
+		const cached = this.files.get(s.id);
+		if (cached && Date.now() - cached.at < 60_000) return cached.list;
+		const list = this.client.listFiles(s).catch((e) => {
+			debug(`file list for ${s.id}: ${errorText(e)}`);
+			return [] as string[];
+		});
+		this.files.set(s.id, { at: Date.now(), list });
+		return list;
 	}
 
 	// --- input ---

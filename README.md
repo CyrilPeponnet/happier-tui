@@ -180,18 +180,39 @@ npm run typecheck
 
 ### Releasing
 
-Pushing a version tag publishes the package to npm and creates the GitHub release
-(`.github/workflows/release.yml`):
+Releases are made by GitHub Actions. Pushing a version tag runs `.github/workflows/release.yml`,
+which checks that the tag matches `package.json`, runs the typecheck and tests, publishes to npm
+(with provenance) and creates the GitHub release.
 
-```bash
-npm version patch        # or minor / major: bumps package.json, commits, tags vX.Y.Z
-git push --follow-tags
-```
+1. Commit and push to `main`, and check that CI is green (`gh run list`).
+2. Preview the release notes: `node scripts/release-notes.mjs`. They list the commits since the
+   last tag, grouped by their subject's type: `feat…:` under New, `fix…:` under Fixes, anything
+   else under Other changes. Reword a subject before tagging if it reads badly.
+3. Bump the version, which commits and tags it (`vX.Y.Z`):
 
-The workflow logs in to npm through
-[trusted publishing](https://docs.npmjs.com/trusted-publishers), so there is no npm token to
-store: the package's settings on npmjs.com name this repository and `release.yml` as its
-trusted publisher.
+   ```bash
+   npm version patch    # fixes: 0.2.1 → 0.2.2
+   npm version minor    # new features: 0.2.1 → 0.3.0
+   npm version major    # breaking changes: 0.2.1 → 1.0.0
+   ```
+
+4. Push the commit and the tag; this starts the release:
+
+   ```bash
+   git push --follow-tags
+   ```
+
+   It takes a minute, and npm another minute or two to list the new version. Edit the notes
+   afterwards on GitHub (or `gh release edit vX.Y.Z --notes "…"`) to add context.
+
+If the tests fail in the release run, nothing is published: fix, then move the tag to the fixed
+commit (`git tag -d vX.Y.Z && git push origin :vX.Y.Z`, then `git tag vX.Y.Z && git push --tags`).
+If only the publish step failed, use "Re-run failed jobs" on the run. A version number can never be
+published twice on npm; a bad release is fixed by the next one.
+
+npm authenticates the workflow through [trusted publishing](https://docs.npmjs.com/trusted-publishers),
+so there is no npm token to store: the package's settings on npmjs.com trust this repository's
+`release.yml`, in the `Release` environment.
 
 ## License
 

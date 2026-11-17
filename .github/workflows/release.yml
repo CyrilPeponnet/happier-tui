@@ -18,6 +18,8 @@ jobs:
     environment: Release
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # all history and tags, for the release notes
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -35,5 +37,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          node scripts/release-notes.mjs "$GITHUB_REF_NAME" > notes.md
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 ||
-            gh release create "$GITHUB_REF_NAME" --title "${GITHUB_REF_NAME#v}" --generate-notes
+            gh release create "$GITHUB_REF_NAME" --title "${GITHUB_REF_NAME#v}" --notes-file notes.md

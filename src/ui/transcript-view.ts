@@ -13,6 +13,9 @@ import { c, clean, markdownTheme, renderOptionsMarkup } from "./theme.js";
 const COLLAPSED_RESULT_LINES = 4;
 const EXPANDED_RESULT_LINES = 400;
 const COLLAPSED_THINKING_LINES = 2;
+/** Tools that run a subagent, whose own transcript is shown under the call. */
+const SUBAGENT_TOOLS = /^(task|agent|subagent)$/i;
+
 
 export interface ViewOptions {
 	expandTools: boolean;
@@ -32,6 +35,8 @@ export class TranscriptView implements Component {
 	readonly options: ViewOptions = { expandTools: false, showThinking: true };
 	lastWidth = 80;
 	private cache = new Map<string, { sig: string; lines: string[] }>();
+	/** Asked once per subagent call whose transcript is not loaded yet. */
+	onSubagent?: (callId: string) => void;
 	/** First line of each row in the last render, for keeping the viewport anchored across re-layouts. */
 	private rowStarts: Array<{ key: string; start: number }> = [];
 
@@ -93,7 +98,9 @@ export class TranscriptView implements Component {
 	private signature(row: Row, t: Transcript, width: number): string {
 		let sig = `${width}|${this.options.expandTools ? 1 : 0}${this.options.showThinking ? 1 : 0}|${row.seq ?? "live"}`;
 		for (const item of row.items) {
-			if (item.kind === "tool") sig += `|t${t.results.has(item.callId) ? 1 : 0}${t.failures.size}`;
+			if (item.kind === "tool") {
+				sig += `|t${t.results.has(item.callId) ? 1 : 0}${t.failures.size}${t.sidechains.get(item.callId)?.version ?? ""}`;
+			}
 			else sig += `|${item.kind[0]}${item.text.length}${"streaming" in item && item.streaming ? "s" : ""}`;
 		}
 		return sig;
@@ -138,7 +145,7 @@ export class TranscriptView implements Component {
 			}
 			case "tool": {
 				const result = t.results.get(item.callId);
-				if (!isTerminalOutput(item)) return this.renderTool(item, result, width);
+				if (!isTerminalOutput(item)) return this.renderTool(item, result, t, width);
 				const text = result ? clean(toolResultText(result.output)).trim() : "";
 				// The same text follows as a "Turn failed" notice; do not show it twice.
 				if (!text || t.failures.has(text)) return [];
@@ -157,11 +164,49 @@ export class TranscriptView implements Component {
 		}
 	}
 
-	private renderTool(item: Extract<Item, { kind: "tool" }>, result: ToolResult | undefined, width: number): string[] {
+	/** A subagent's progress: a one-line summary, or with ctrl+o every step it took. */
+	private renderSubagent(callId: string, t: Transcript, width: number): string[] {
+		const sub = t.sidechains.get(callId);
+		if (!sub) {
+			this.onSubagent?.(callId);
+			return [];
+		}
+		const items = sub.list().flatMap((r) => r.items);
+		const tools = items.filter((i): i is Extract<Item, { kind: "tool" }> => i.kind === "tool");
+		if (items.length === 0) return [];
+		const step = (i: Extract<Item, { kind: "tool" }>) => {
+			const { name, arg } = toolSummary(i);
+			const r = sub.results.get(i.callId);
+			const dot = !r ? c.warn("○") : r.isError ? c.err("●") : c.ok("●");
+			return `${dot} ${clean(name)}${arg ? ` ${c.dim(clean(arg))}` : ""}`;
+		};
+		if (!this.options.expandTools) {
+			const last = tools.at(-1);
+			const count = `${tools.length} step${tools.length === 1 ? "" : "s"}`;
+			return [truncateToWidth(`${c.faint("  ↳ ")}${c.dim(`subagent · ${count}`)}${last ? `${c.faint(" · ")}${step(last)}` : ""}`, width)];
+		}
+		const bar = c.faint("  │ ");
+		const inner = Math.max(4, width - 4);
+		const out: string[] = [];
+		// The subagent's last words come back as the tool result, shown right below.
+		const result = t.results.get(callId);
+		const final = result ? clean(toolResultText(result.output)).trim() : "";
+		for (const i of items) {
+			if (i.kind === "text" && final && clean(i.text).trim() === final) continue;
+			if (i.kind === "tool") out.push(truncateToWidth(`${bar}${step(i)}`, width));
+			else if (i.kind === "text" || i.kind === "user") {
+				for (const l of wrapTextWithAnsi(clean(i.text).trim(), inner).slice(0, 12)) out.push(`${bar}${c.dim(l)}`);
+			}
+		}
+		return out;
+	}
+
+	private renderTool(item: Extract<Item, { kind: "tool" }>, result: ToolResult | undefined, t: Transcript, width: number): string[] {
 		const { name, arg } = toolSummary(item);
 		const dot = !result ? c.warn("○") : result.isError ? c.err("●") : c.ok("●");
 		const head = `${dot} ${c.tool.bold(clean(name))}${arg ? ` ${c.dim(clean(arg))}` : ""}`;
 		const lines = [truncateToWidth(head, width)];
+		if (SUBAGENT_TOOLS.test(item.name) || t.sidechains.has(item.callId)) lines.push(...this.renderSubagent(item.callId, t, width));
 		if (!result) return lines;
 
 		const text = clean(toolResultText(result.output)).replace(/\n+$/, "");

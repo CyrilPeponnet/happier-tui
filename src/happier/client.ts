@@ -71,6 +71,8 @@ export interface MessageRow {
 	seq?: number;
 	localId: string | null;
 	createdAt: number;
+	/** Set on a subagent's messages: the id of the tool call that started it. */
+	sidechainId: string | null;
 	/** Decrypted record, or null when it could not be decrypted. */
 	record: unknown;
 }
@@ -310,6 +312,7 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 			seq: typeof m.seq === "number" ? m.seq : undefined,
 			localId: typeof m.localId === "string" ? m.localId : null,
 			createdAt: typeof m.createdAt === "number" ? m.createdAt : Date.now(),
+			sidechainId: typeof m.sidechainId === "string" && m.sidechainId ? m.sidechainId : null,
 			record: this.openEnvelope(session.key, m.content),
 		};
 	}
@@ -341,8 +344,16 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 	}
 
 	/** Latest page when no bound is given (rows come back newest first). */
-	async fetchMessages(session: Session, opts: { beforeSeq?: number; afterSeq?: number; limit?: number } = {}) {
+	/** A page of the main transcript, or of one subagent's (`sidechainId`). */
+	async fetchMessages(
+		session: Session,
+		opts: { beforeSeq?: number; afterSeq?: number; limit?: number; sidechainId?: string } = {},
+	) {
 		const q = new URLSearchParams({ limit: String(opts.limit ?? 150) });
+		if (opts.sidechainId) {
+			q.set("scope", "sidechain");
+			q.set("sidechainId", opts.sidechainId);
+		}
 		if (opts.afterSeq !== undefined) q.set("afterSeq", String(opts.afterSeq));
 		else if (opts.beforeSeq !== undefined) q.set("beforeSeq", String(opts.beforeSeq));
 		const data = await this.http<{

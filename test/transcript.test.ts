@@ -130,3 +130,15 @@ test("claude tool results read as text: diffs, read counts, command output", () 
 	assert.equal(toolResultText({ status: "completed" }), "status: completed");
 });
 
+test("subagent records go to their own transcript, not the main one", () => {
+	const t = new Transcript();
+	const sub = { role: "agent", content: { type: "output", data: { type: "assistant", message: { content: [{ type: "text", text: "sub" }] } } } };
+	t.upsert({ id: "a", seq: 1, createdAt: 1, sidechainId: "call1" }, sub);
+	// Claude records name their parent tool call even without the relay's sidechain column.
+	const viaParent = { role: "agent", content: { type: "output", data: { type: "assistant", parent_tool_use_id: "call2", message: { content: [{ type: "text", text: "x" }] } } } };
+	t.upsert({ id: "b", seq: 2, createdAt: 2 }, viaParent);
+	assert.equal(t.list().length, 0);
+	assert.equal(t.sidechains.get("call1")?.list().length, 1);
+	assert.equal(t.sidechains.get("call2")?.list().length, 1);
+	assert.equal(t.sidechains.get("call2")?.sidechains.size, 0);
+});

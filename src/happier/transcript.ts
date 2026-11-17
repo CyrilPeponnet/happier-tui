@@ -424,9 +424,41 @@ export class Transcript {
 	usage: Usage = {};
 	minSeq: number | undefined;
 	maxSeq: number | undefined;
+	/** Subagent transcripts, keyed by the id of the tool call that started each one. */
+	readonly sidechains = new Map<string, Transcript>();
+	/** Bumped on every visible change, so views can tell when a subagent made progress. */
+	version = 0;
 
-	/** Inserts or replaces one decrypted record. Returns true when something visible changed. */
-	upsert(row: { id?: string; localId?: string | null; seq?: number; createdAt: number }, record: unknown): boolean {
+	sidechain(id: string): Transcript {
+		let t = this.sidechains.get(id);
+		if (!t) this.sidechains.set(id, (t = new Transcript()));
+		return t;
+	}
+
+	/**
+	 * Inserts or replaces one decrypted record. A subagent's record goes to its own transcript.
+	 * Returns true when something visible changed.
+	 */
+	upsert(
+		row: { id?: string; localId?: string | null; seq?: number; createdAt: number; sidechainId?: string | null },
+		record: unknown,
+	): boolean {
+		const side = row.sidechainId ?? claudeParentToolUseId(record);
+		if (side) {
+			const sub = this.sidechain(side);
+			const changed = sub.apply(row, record);
+			if (changed) {
+				sub.version++;
+				this.version++;
+			}
+			return changed;
+		}
+		const changed = this.apply(row, record);
+		if (changed) this.version++;
+		return changed;
+	}
+
+	private apply(row: { id?: string; localId?: string | null; seq?: number; createdAt: number }, record: unknown): boolean {
 		const key = row.localId || row.id;
 		if (!key) return false;
 		const n = normalizeRecord(record);
@@ -462,6 +494,7 @@ export class Transcript {
 		if (!row || row.seq !== undefined || !item || (item.kind !== "text" && item.kind !== "thinking")) return false;
 		if (item.text.length !== baseLength) return false;
 		item.text += text;
+		this.version++;
 		return true;
 	}
 
@@ -478,6 +511,13 @@ export class Transcript {
 		}
 		return this.ordered;
 	}
+}
+
+/** Claude SDK records of a subagent name the Task call they belong to. */
+function claudeParentToolUseId(record: unknown): string | undefined {
+	const content = isObj(record) && isObj(record.content) ? record.content : undefined;
+	const data = content?.type === "output" && isObj(content.data) ? content.data : undefined;
+	return str(data?.parent_tool_use_id) || undefined;
 }
 
 function dropUndefined<T extends object>(o: T): Partial<T> {

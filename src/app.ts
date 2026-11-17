@@ -199,6 +199,10 @@ export class App {
 			{ component: new Lines((w) => this.renderRequests(w)), basis: "auto", shrink: 0 },
 		]);
 		this.showHome();
+		this.view.onSubagent = (callId) => {
+			const s = this.current();
+			if (s) void this.loadSubagent(s, callId);
+		};
 		this.newSessionFlow = new NewSessionFlow({
 			client: this.client,
 			pick: (opts) => this.pick(opts),
@@ -450,6 +454,22 @@ export class App {
 			this.scroll.scrollToEnd();
 		}
 		this.promptForRequests(s);
+		this.tui.requestRender();
+	}
+
+	/** Loads a subagent's transcript the first time its tool call is shown. */
+	private async loadSubagent(s: Session, callId: string): Promise<void> {
+		const entry = this.entries.get(s.id);
+		if (!entry) return;
+		entry.transcript.sidechain(callId); // marks it as requested
+		let before: number | undefined;
+		for (let page = 0; page < 10; page++) {
+			const res = await this.client.fetchMessages(s, { sidechainId: callId, beforeSeq: before, limit: 500 }).catch(() => null);
+			if (!res) break;
+			for (const m of res.messages) entry.transcript.upsert({ ...m, sidechainId: callId }, m.record);
+			if (!res.hasMore || res.nextBeforeSeq === null) break;
+			before = res.nextBeforeSeq;
+		}
 		this.tui.requestRender();
 	}
 

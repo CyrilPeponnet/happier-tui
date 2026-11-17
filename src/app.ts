@@ -1,7 +1,6 @@
 import { appendFileSync } from "node:fs";
 import {
 	type Component,
-	Editor,
 	isKeyRelease,
 	isKeyRepeat,
 	Key,
@@ -40,6 +39,7 @@ import {
 import { type LocalLaunch, NewSessionFlow } from "./new-session.js";
 import { errorText, justify, machineName, questionsOf, requestSummary, shortHost, untilText } from "./ui/format.js";
 import { SessionAutocomplete } from "./ui/autocomplete.js";
+import { PromptEditor } from "./ui/prompt-editor.js";
 import { Picker, type PickerOptions } from "./ui/picker.js";
 import { Home, sortSessions, statusGlyph } from "./ui/home.js";
 import { agoText, c, clean, editorTheme, shortPath, SPINNER } from "./ui/theme.js";
@@ -106,7 +106,7 @@ export class App {
 	private readonly tui: TuiAltScreen;
 	private readonly view = new TranscriptView();
 	private readonly scroll: ScrollView;
-	private readonly editor: Editor;
+	private readonly editor: PromptEditor;
 	private readonly home: Home;
 	private readonly chatRoot: VStack;
 	private readonly homeRoot: VStack;
@@ -144,6 +144,8 @@ export class App {
 	private readonly queuedCount = new Map<string, number>();
 	/** A queued prompt being edited in the editor; enter saves it back to the queue. */
 	private editingQueued: { sessionId: string; localId: string } | null = null;
+	/** Transcript version last seen at the bottom, to tell about output arriving while scrolled up. */
+	private seen: { id: string | null; version: number } = { id: null, version: 0 };
 	private resolveDone: () => void = () => {};
 	readonly done = new Promise<void>((r) => {
 		this.resolveDone = r;
@@ -169,7 +171,7 @@ export class App {
 			scrollToEndIndicator: () => c.accent(" ↓ jump to latest "),
 		});
 		this.scroll = new ScrollView(this.view, { follow: "end", primary: true, scrollbar: "auto" });
-		this.editor = new Editor(this.tui, editorTheme, { paddingX: 1 });
+		this.editor = new PromptEditor(this.tui, editorTheme, { paddingX: 1 });
 		this.editor.onSubmit = (text) => void this.submit(text);
 		this.home = new Home(() => {
 			const machines = [...this.client.machines.values()];
@@ -559,6 +561,7 @@ export class App {
 		if (key === this.commandsKey) return;
 		this.commandsKey = key;
 		void this.sessionFiles(s); // warm the `@` index; a large tree takes seconds to list
+		this.editor.placeholder = `Message ${s.metadata.flavor ?? "the agent"} · @ files · / commands`;
 		this.editor.setAutocompleteProvider(new SessionAutocomplete([...LOCAL_COMMANDS, ...remote], () => this.sessionFiles(s)));
 	}
 
@@ -1186,8 +1189,8 @@ export class App {
 					: c.err("○ offline — retrying");
 		let left = ` ${c.accent.bold("happier")}`;
 		if (s) {
-			left += `  ${statusGlyph(s, this.frame)} ${c.bold(clean(sessionTitle(s)).replace(/\s+/g, " "))}`;
-			left += c.dim(`  ${s.metadata.flavor ?? "?"} · ${this.hostOf(s)} · ${shortPath(s.metadata.path, s.metadata.homeDir)}`);
+			left += `  ${statusGlyph(s, this.frame)} ${c.bold.whiteBright(clean(sessionTitle(s)).replace(/\s+/g, " "))}`;
+			left += c.faint(`  ${s.metadata.flavor ?? "?"} · ${this.hostOf(s)} · ${shortPath(s.metadata.path, s.metadata.homeDir)}`);
 		} else {
 			left += c.dim(`  ${this.client.config.serverName}`);
 		}
@@ -1197,6 +1200,9 @@ export class App {
 	private renderRequests(width: number): string[] {
 		const lines: string[] = [];
 		const s = this.current();
+		const version = (s && this.entries.get(s.id)?.transcript.version) ?? 0;
+		if (this.scroll.isFollowingEnd || s?.id !== this.seen.id) this.seen = { id: s?.id ?? null, version };
+		else if (version > this.seen.version) lines.push(` ${c.accent("↓ new messages below")} ${c.faint("· pgdn to read")}`);
 		if (s) {
 			const goal = sessionGoal(s.metadata);
 			if (goal && !["complete", "cancelled"].includes(goal.status)) {
@@ -1252,13 +1258,16 @@ export class App {
 		const usage = this.entries.get(s.id)?.transcript.usage;
 		if (usage?.contextUsed && usage.contextWindow) {
 			const pct = Math.round((usage.contextUsed / usage.contextWindow) * 100);
-			parts.push((pct >= 85 ? c.warn : c.dim)(`ctx ${pct}%`));
-		}
+			const of = `${tokens(usage.contextUsed)}/${tokens(usage.contextWindow)}`;
+			parts.push((pct >= 85 ? c.warn : c.dim)(`context ${pct}% (${of})`));
+		} else if (usage?.contextUsed) parts.push(c.dim(`context ${tokens(usage.contextUsed)}`));
+		if (usage?.cost) parts.push(c.dim(`$${usage.cost.toFixed(2)}`));
 		let state: string;
 		if (this.busy(s)) state = c.warn(`${SPINNER[this.frame % SPINNER.length]} working`) + c.dim(" · esc to interrupt");
 		else if (!s.active) state = c.dim("inactive · sending resumes it");
 		else state = c.ok("ready");
-		return [justify(` ${state}${c.dim("  ·  ")}${parts.join(c.dim(" · "))}`, c.dim("ctrl+s sessions · /keys "), width)];
+		const right = `${this.busy(s) ? "" : `last activity ${agoText(s.activityAt)} · `}ctrl+s sessions · /keys `;
+		return [justify(` ${state}${c.dim("  ·  ")}${parts.join(c.dim(" · "))}`, c.faint(right), width)];
 	}
 }
 
@@ -1268,6 +1277,14 @@ type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => !!v && typeof v === "object" && !Array.isArray(v);
 
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+/** 126443 → "126k", 1000000 → "1M". */
+function tokens(n: number): string {
+	if (n >= 1_000_000) return `${Number((n / 1_000_000).toFixed(1))}M`;
+	if (n >= 1000) return `${Math.round(n / 1000)}k`;
+	return String(n);
+}
+
 function isDirect(s: Session): boolean {
 	return isObj(s.metadata.directSessionV1) && s.seq === 0;
 }

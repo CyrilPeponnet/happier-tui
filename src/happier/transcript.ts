@@ -205,6 +205,10 @@ function normalizeClaudeOutput(data: unknown, out: Normalized): void {
 	if (type !== "assistant" && type !== "user") return;
 	const message = isObj(data.message) ? data.message : undefined;
 	if (!message) return;
+	const usage = isObj(message.usage) ? message.usage : undefined;
+	if (usage && num(usage.context_used_tokens)) {
+		out.usage = { contextUsed: num(usage.context_used_tokens), contextWindow: num(usage.context_window_tokens) };
+	}
 	const blocks = message.content;
 
 	if (typeof blocks === "string") {

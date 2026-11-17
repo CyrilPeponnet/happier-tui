@@ -114,3 +114,19 @@ test("provider terminal output that repeats the turn failure is recorded once", 
 	assert.equal(t.failures.has(text), true);
 	assert.deepEqual(t.list().at(-1)!.items, [{ kind: "notice", text: `Turn failed: ${text}`, level: "error" }]);
 });
+const claudeResult = (toolUseResult: object, content = "model text") => ({ content, tool_use_result: toolUseResult });
+
+test("claude tool results read as text: diffs, read counts, command output", () => {
+	const edit = claudeResult({
+		filePath: "/a",
+		structuredPatch: [{ oldStart: 3, oldLines: 1, newStart: 3, newLines: 1, lines: ["-old", "+new"] }],
+	});
+	assert.equal(toolResultText(edit), "@@ -3,1 +3,1 @@\n-old\n+new");
+	assert.equal(toolResultText(claudeResult({ type: "text", file: { numLines: 12 } })), "Read 12 lines");
+	assert.equal(toolResultText(claudeResult({ stdout: "out", stderr: "err", interrupted: false })), "out\nerr");
+	assert.equal(toolResultText(claudeResult({ matches: [] }, "fallback")), "fallback");
+	// JSON returned as text by MCP tools, and leftover objects, become key: value lines.
+	assert.equal(toolResultText([{ type: "text", text: '{"success":true,"title":"T"}' }]), "success: true\ntitle: T");
+	assert.equal(toolResultText({ status: "completed" }), "status: completed");
+});
+

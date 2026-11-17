@@ -173,7 +173,9 @@ export class TranscriptView implements Component {
 		shown.forEach((line, i) => {
 			const color = result.isError
 				? c.err
-				: /^\+(?!\+\+)/.test(line)
+				: line.startsWith("@@")
+					? c.accent
+					: /^\+(?!\+\+)/.test(line)
 					? c.ok
 					: /^-(?!--)/.test(line)
 						? c.err

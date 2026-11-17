@@ -325,17 +325,61 @@ export function isTerminalOutput(item: Extract<Item, { kind: "tool" }>): boolean
 	return item.name === "terminal-output";
 }
 
+/** A unified diff of Claude's `structuredPatch` hunks. */
+function patchText(hunks: unknown[]): string {
+	return hunks
+		.filter(isObj)
+		.flatMap((h) => [
+			`@@ -${num(h.oldStart) ?? 0},${num(h.oldLines) ?? 0} +${num(h.newStart) ?? 0},${num(h.newLines) ?? 0} @@`,
+			...(Array.isArray(h.lines) ? h.lines.filter((l): l is string => typeof l === "string") : []),
+		])
+		.join("\n");
+}
+
+/** Readable text for the Claude tool outcomes that have one, else null (use `content`). */
+function claudeResultText(r: Obj): string | null {
+	if (Array.isArray(r.structuredPatch) && r.structuredPatch.length > 0) return patchText(r.structuredPatch);
+	// Read: the file body is for the model; say how much was read, as Claude Code does.
+	if (r.type === "text" && isObj(r.file)) {
+		const lines = num(r.file.numLines) ?? 0;
+		return `Read ${lines} line${lines === 1 ? "" : "s"}`;
+	}
+	if (typeof r.stdout === "string" || typeof r.stderr === "string") {
+		const out = [str(r.stdout), str(r.stderr)].filter((x): x is string => !!x?.trim()).join("\n");
+		if (r.interrupted === true) return `${out}\n(interrupted)`.trim();
+		return out || (r.noOutputExpected === true ? "" : "(no output)");
+	}
+	return null;
+}
+
 /** Best-effort plain text of a tool result. */
 export function toolResultText(output: unknown): string {
 	if (output == null) return "";
-	if (typeof output === "string") return output;
+	if (typeof output === "string") {
+		// MCP tools often return a JSON object as text.
+		if (/^\s*\{[\s\S]*\}\s*$/.test(output)) {
+			try {
+				const parsed: unknown = JSON.parse(output);
+				if (isObj(parsed)) return toolResultText(parsed);
+			} catch {
+				// not JSON after all
+			}
+		}
+		return output;
+	}
 	if (Array.isArray(output)) {
-		return output
-			.map((b) => (isObj(b) && typeof b.text === "string" ? b.text : typeof b === "string" ? b : ""))
-			.filter(Boolean)
-			.join("\n");
+		const parts = output
+			.map((b) => (typeof b === "string" ? b : isObj(b) ? (str(b.text) ?? str(b.tool_name) ?? "") : ""))
+			.filter(Boolean);
+		return parts.length === 1 ? toolResultText(parts[0]) : parts.join("\n");
 	}
 	if (isObj(output)) {
+		// Claude: `content` is what the model saw, `tool_use_result` the structured outcome.
+		if (isObj(output.tool_use_result)) {
+			const structured = claudeResultText(output.tool_use_result);
+			if (structured !== null) return structured;
+		}
+		if (typeof output.content === "string") return output.content;
 		const details = isObj(output.details) ? output.details : undefined;
 		const diff = str(details?.diff) ?? str(output.diff);
 		if (diff) return diff;
@@ -351,7 +395,11 @@ export function toolResultText(output: unknown): string {
 		void _happier;
 		void _raw;
 		void _acp;
-		return Object.keys(rest).length ? JSON.stringify(rest, null, 2) : "";
+		// Anything else: one `key: value` line per field, which reads better than JSON.
+		return Object.entries(rest)
+			.filter(([, v]) => v !== undefined && v !== null && v !== "")
+			.map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+			.join("\n");
 	}
 	return String(output);
 }

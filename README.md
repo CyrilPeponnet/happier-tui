@@ -190,9 +190,15 @@ of CLI 0.2.20, so a relay or CLI upgrade may require changes here.
 
 ```bash
 npm run dev         # run from source
+npm run demo        # the TUI on made-up sessions, no account needed
 npm test            # unit tests
 npm run typecheck
 ```
+
+The README's animation and screenshots come from the demo: `npm run screenshots` (needs
+[VHS](https://github.com/charmbracelet/vhs), `brew install vhs`) plays the tour in
+[`scripts/screenshots.tape`](scripts/screenshots.tape) and rewrites `assets/demo.gif` and the PNGs.
+Change the made-up sessions and the agent's scripted replies in [`scripts/demo.ts`](scripts/demo.ts).
 
 ### Releasing
 

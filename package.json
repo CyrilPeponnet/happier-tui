@@ -8,7 +8,9 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p . --noEmit",
     "start": "node dist/main.js",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "demo": "tsx scripts/demo.ts",
+    "screenshots": "vhs scripts/screenshots.tape"
   },
   "keywords": [
     "happier",

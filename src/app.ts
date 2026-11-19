@@ -176,7 +176,7 @@ export class App {
 			scrollToEndIndicator: () => c.accent(" ↓ jump to latest "),
 		});
 		this.scroll = new ScrollView(this.view, { follow: "end", primary: true, scrollbar: "auto" });
-		this.editor = new PromptEditor(this.tui, editorTheme, { paddingX: 1 });
+		this.editor = new PromptEditor(this.tui, editorTheme, { paddingX: 2 });
 		this.editor.onSubmit = (text) => void this.submit(text);
 		this.home = new Home(() => {
 			const machines = [...this.client.machines.values()];
@@ -216,7 +216,7 @@ export class App {
 		};
 
 		this.chatRoot = new VStack([
-			{ component: new Lines((w) => this.renderHeader(w)), basis: 1, shrink: 0 },
+			{ component: new Lines((w) => this.renderHeader(w)), basis: 2, shrink: 0 },
 			{ component: this.scroll, basis: 0, grow: 1, minSize: 3 },
 			{ component: new Lines((w) => this.renderRequests(w)), basis: "auto", shrink: 0 },
 			{ component: this.editor, basis: "auto", shrink: 1, minSize: 3 },
@@ -1259,14 +1259,15 @@ export class App {
 				: this.connection === "connecting"
 					? c.warn("◌ connecting")
 					: c.err("○ offline — retrying");
-		let left = ` ${c.accent.bold("happier")}`;
+		let left = ` ${c.accent.bold("happier-tui")}`;
 		if (s) {
 			left += `  ${statusGlyph(s, this.frame)} ${c.bold.whiteBright(clean(sessionTitle(s)).replace(/\s+/g, " "))}`;
 			left += c.faint(`  ${s.metadata.flavor ?? "?"} · ${this.hostOf(s)} · ${shortPath(s.metadata.path, s.metadata.homeDir)}`);
 		} else {
 			left += c.dim(`  ${this.client.config.serverName}`);
 		}
-		return [c.headerBg(justify(left, `${conn} `, width))];
+		// A blank line keeps the conversation off the header when scrolled.
+		return [c.headerBg(justify(left, `${conn} `, width)), ""];
 	}
 
 	private renderRequests(width: number): string[] {

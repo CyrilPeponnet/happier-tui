@@ -16,7 +16,7 @@ import {
 	toolResultText,
 	toolSummary,
 } from "../happier/transcript.js";
-import { c, clean, markdownTheme } from "./theme.js";
+import { CODE_FENCE, c, clean, markdownTheme } from "./theme.js";
 
 const COLLAPSED_RESULT_LINES = 4;
 const EXPANDED_RESULT_LINES = 400;
@@ -46,6 +46,11 @@ const NO_LAYOUT: RowLayout = { runs: new Map(), opened: new Map(), hidden: new S
 interface RenderedRow {
 	lines: string[];
 	clicks: Array<[offset: number, key: string]>;
+}
+
+/** Lines on a full-width background, with a blank line of padding above and below. */
+function panel(lines: string[], width: number, bg: (s: string) => string): string[] {
+	return ["", ...lines, ""].map((l) => bg(truncateToWidth(` ${l}`, width, "", true)));
 }
 
 export function formatDuration(ms: number): string {
@@ -233,11 +238,11 @@ export class TranscriptView implements Component {
 			}
 			if (item.kind === "tool" && !isTerminalOutput(item)) {
 				const key = `${run ? "run" : "tool"}:${item.callId}`;
-				clicks.push([lines.length, key]);
+				// A panel's padding and heading, a folded run's one line.
+				for (let k = 0; k < (run ? 1 : 2); k++) clicks.push([lines.length + k, key]);
 				// "… N more lines" opens the output too, as it says.
-				if (rendered.at(-1)?.includes(MORE_HINT)) {
-					clicks.push([lines.length + rendered.length - 1, key]);
-				}
+				const more = rendered.findIndex((l) => l.includes(MORE_HINT));
+				if (more >= 0) clicks.push([lines.length + more, key]);
 			}
 			for (const l of rendered) lines.push(` ${l}`);
 		}
@@ -283,8 +288,7 @@ export class TranscriptView implements Component {
 	private renderItem(item: Item, t: Transcript, width: number): string[] {
 		switch (item.kind) {
 			case "user": {
-				const body = wrapTextWithAnsi(clean(item.text), Math.max(4, width - 4));
-				return body.map((l) => c.userBg(truncateToWidth(`${c.accent("▌")} ${c.user(l)}`, width, "", true)));
+				return panel(wrapTextWithAnsi(clean(item.text), Math.max(4, width - 2)), width, c.userBg);
 			}
 			case "text": {
 				// Offered choices come last, one per line; renderRow makes them clickable.
@@ -292,16 +296,22 @@ export class TranscriptView implements Component {
 				const lines = text ? new Markdown(text, 0, 0, markdownTheme).render(width) : [];
 				if (item.streaming && lines.length) lines[lines.length - 1] += c.accent(" ▍");
 				if (options.length > 0) lines.push("", ...options.map((o) => `${c.accent("❯")} ${c.user(o.replace(/\s+/g, " "))}`));
-				return lines.map((l) => truncateToWidth(l, width));
+				// Code blocks, fences included, on a light background across the whole width.
+				let code = false;
+				return lines.map((l) => {
+					const fence = l.includes(CODE_FENCE);
+					if (fence) code = !code;
+					return fence || code ? c.codeBg(truncateToWidth(l.replace(CODE_FENCE, ""), width, "", true)) : truncateToWidth(l, width);
+				});
 			}
 			case "thinking": {
 				if (!this.options.showThinking) return [];
 				const all = wrapTextWithAnsi(clean(item.text).trim(), Math.max(4, width - 2));
 				const shown = this.options.expandTools || item.streaming ? all : all.slice(0, COLLAPSED_THINKING_LINES);
 				const tail = item.streaming ? all.slice(-6) : shown;
-				const lines = tail.map((l, i) => c.faint.italic(`${i === 0 ? "∴ " : "  "}${l}`));
+				const lines = tail.map((l) => c.dim.italic(l));
 				if (!item.streaming && all.length > shown.length) {
-					lines.push(c.faint(`  … ${all.length - shown.length} more lines`));
+					lines.push(c.faint(`… ${all.length - shown.length} more lines`));
 				}
 				return lines;
 			}
@@ -365,36 +375,36 @@ export class TranscriptView implements Component {
 
 	private renderTool(item: Extract<Item, { kind: "tool" }>, result: ToolResult | undefined, t: Transcript, width: number): string[] {
 		const { name, arg, detail } = toolSummary(item);
+		const bg = !result ? c.toolBg.running : result.isError ? c.toolBg.err : c.toolBg.ok;
 		const dot = !result ? c.warn("○") : result.isError ? c.err("●") : c.ok("●");
+		// The panel takes a column of padding on each side.
+		const inner = Math.max(4, width - 2);
 		const head = `${dot} ${c.tool.bold(clean(name))}${arg ? ` ${c.dim(clean(arg))}` : ""}`;
-		const lines = [truncateToWidth(head, width)];
+		const lines = [truncateToWidth(head, inner)];
 		if (detail && this.options.expandTools) {
-			for (const l of wrapTextWithAnsi(clean(detail), Math.max(4, width - 4)).slice(0, 6)) lines.push(c.faint(`  ${l}`));
+			for (const l of wrapTextWithAnsi(clean(detail), inner).slice(0, 6)) lines.push(c.faint(l));
 		}
-		if (SUBAGENT_TOOLS.test(item.name) || t.sidechains.has(item.callId)) lines.push(...this.renderSubagent(item.callId, t, width));
-		if (!result) return lines;
+		if (SUBAGENT_TOOLS.test(item.name) || t.sidechains.has(item.callId)) lines.push(...this.renderSubagent(item.callId, t, inner));
 
-		const text = clean(toolResultText(result.output)).replace(/\n+$/, "");
-		if (!text) return lines;
-		const max = this.options.expandTools || this.full.has(item.callId) ? EXPANDED_RESULT_LINES : COLLAPSED_RESULT_LINES;
-		const raw = text.split("\n");
-		const bodyWidth = Math.max(4, width - 4);
-		const shown = raw.slice(0, max);
-		shown.forEach((line, i) => {
-			const color = result.isError
-				? c.err
-				: line.startsWith("@@")
-					? c.accent
-					: /^\+(?!\+\+)/.test(line)
-					? c.ok
-					: /^-(?!--)/.test(line)
-						? c.err
-						: c.dim;
-			lines.push(`${c.faint(i === 0 ? "  ⎿ " : "    ")}${color(truncateToWidth(line, bodyWidth))}`);
-		});
-		if (raw.length > shown.length) {
-			lines.push(c.faint(`    … ${raw.length - shown.length} ${MORE_HINT}`));
+		const text = result ? clean(toolResultText(result.output)).replace(/\n+$/, "") : "";
+		if (result && text) {
+			const max = this.options.expandTools || this.full.has(item.callId) ? EXPANDED_RESULT_LINES : COLLAPSED_RESULT_LINES;
+			const raw = text.split("\n");
+			lines.push("");
+			for (const line of raw.slice(0, max)) {
+				const color = result.isError
+					? c.err
+					: line.startsWith("@@")
+						? c.accent
+						: /^\+(?!\+\+)/.test(line)
+							? c.ok
+							: /^-(?!--)/.test(line)
+								? c.err
+								: c.soft;
+				lines.push(color(truncateToWidth(line, inner)));
+			}
+			if (raw.length > max) lines.push(c.faint(`… ${raw.length - max} ${MORE_HINT}`));
 		}
-		return lines;
+		return panel(lines, width, bg);
 	}
 }

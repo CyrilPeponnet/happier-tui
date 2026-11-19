@@ -98,3 +98,15 @@ test("options are split out of the text", () => {
 	assert.deepEqual(splitOptions("A\n<options><option> x </option><option></option></options>"), { text: "A", options: ["x"] });
 	assert.deepEqual(splitOptions("partial <options><option>x"), { text: "partial <options><option>x", options: [] });
 });
+
+test("code blocks lose their fences: the language stays as a label, the tag never shows", () => {
+	const t = new Transcript();
+	t.upsert({ id: "1", seq: 1, createdAt: 0 }, acp({ type: "message", message: "Like this:\n\n```python\nif x:\n    pass\n```\n\nDone." }));
+	const view = new TranscriptView();
+	view.setTranscript(t);
+	const lines = view.render(60);
+	assert.ok(lines.every((l) => !l.includes("happier:fence")));
+	const text = plain(lines);
+	assert.doesNotMatch(text, /```/);
+	assert.match(text, /^ {3}python *\n {3}if x: *\n {7}pass *\n/m);
+});

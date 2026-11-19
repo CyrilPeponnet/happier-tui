@@ -1107,11 +1107,12 @@ export class App {
 			this.run(() => this.answer(s, next));
 			return;
 		}
-		const options = this.offeredOptions(s);
-		const key = `${s.id}:options:${this.entries.get(s.id)?.transcript.maxSeq}`;
-		if (options.length === 0 || this.prompted.has(key) || this.editor.getText().trim()) return;
+		const offer = this.offeredOptions(s);
+		// Keyed on the message that offers them, so a dismissed popup stays dismissed.
+		const key = offer && `${s.id}:options:${offer.key}`;
+		if (!offer || !key || this.prompted.has(key) || this.editor.getText().trim()) return;
 		this.prompted.add(key);
-		this.run(() => this.chooseOption(options));
+		this.run(() => this.chooseOption(offer.options));
 	}
 
 	/** ctrl+r: answer what the agent is waiting for: a permission request, else its offered choices. */
@@ -1119,12 +1120,12 @@ export class App {
 		const s = this.current();
 		const req = s && pendingRequests(s)[0];
 		if (s && req) return this.answer(s, req);
-		const options = s ? this.offeredOptions(s) : [];
-		if (!s || options.length === 0) {
+		const offer = s && this.offeredOptions(s);
+		if (!offer) {
 			this.flash("Nothing to answer in this session.", "info");
 			return;
 		}
-		await this.chooseOption(options);
+		await this.chooseOption(offer.options);
 	}
 
 	private async chooseOption(options: string[]): Promise<void> {
@@ -1138,9 +1139,9 @@ export class App {
 	}
 
 	/** Choices the agent offered at the end of its last turn, while it waits for the reply. */
-	private offeredOptions(s: Session): string[] {
+	private offeredOptions(s: Session): { key: string; options: string[] } | undefined {
 		const entry = this.entries.get(s.id);
-		return entry && !this.busy(s) ? latestOptions(entry.transcript) : [];
+		return entry && !this.busy(s) ? latestOptions(entry.transcript) : undefined;
 	}
 
 	private async answer(s: Session, req: PermissionRequest): Promise<void> {
@@ -1300,7 +1301,7 @@ export class App {
 				lines.push(c.faint(`   ${more}/queue to edit or cancel`));
 			}
 			const reqs = pendingRequests(s);
-			const offered = reqs.length === 0 ? this.offeredOptions(s).length : 0;
+			const offered = reqs.length === 0 ? (this.offeredOptions(s)?.options.length ?? 0) : 0;
 			if (offered > 0) lines.push(` ${c.accent("❯")} ${c.dim(`${offered} choices above · click one, or ctrl+r`)}`);
 			const first = reqs[0];
 			if (first) {

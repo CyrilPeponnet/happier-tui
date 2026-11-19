@@ -77,7 +77,10 @@ test("offered options render as lines that send themselves when clicked", () => 
 		{ id: "2", seq: 2, createdAt: 1 },
 		acp({ type: "message", message: "Pick one:\n<options><option>Ship it</option><option>Write tests</option></options>" }),
 	);
-	assert.deepEqual(latestOptions(t), ["Ship it", "Write tests"]);
+	assert.deepEqual(latestOptions(t), { key: "2", options: ["Ship it", "Write tests"] });
+	// Later records without choices (usage, turn end) do not make it a new offer.
+	t.upsert({ id: "2b", seq: 4, createdAt: 1 }, acp({ type: "message", message: "" }));
+	assert.equal(latestOptions(t)?.key, "2");
 	const view = new TranscriptView();
 	view.setTranscript(t);
 	const sent: string[] = [];
@@ -91,7 +94,7 @@ test("offered options render as lines that send themselves when clicked", () => 
 	assert.deepEqual(sent, ["Write tests"]);
 	// Once the user replied, the choices are no longer the latest ones.
 	t.upsert({ id: "3", seq: 3, createdAt: 2 }, user("Write tests"));
-	assert.deepEqual(latestOptions(t), []);
+	assert.equal(latestOptions(t), undefined);
 });
 
 test("options are split out of the text", () => {

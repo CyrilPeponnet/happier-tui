@@ -426,19 +426,20 @@ export function splitOptions(text: string): { text: string; options: string[] } 
 }
 
 /** The choices the agent offered in its latest turn, if any. */
-export function latestOptions(t: Transcript): string[] {
+export function latestOptions(t: Transcript): { key: string; options: string[] } | undefined {
 	const rows = t.list();
 	for (let i = rows.length - 1; i >= 0; i--) {
 		const items = rows[i]!.items;
-		if (items[0]?.kind === "user") return [];
+		if (items[0]?.kind === "user") return undefined;
 		for (let j = items.length - 1; j >= 0; j--) {
 			const item = items[j]!;
 			if (item.kind !== "text") continue;
 			const { options } = splitOptions(item.text);
-			if (options.length > 0) return options;
+			// The row key stays the same when a streamed reply is saved, so it identifies the offer.
+			if (options.length > 0) return { key: rows[i]!.key, options };
 		}
 	}
-	return [];
+	return undefined;
 }
 
 // --- ordered transcript store ------------------------------------------------

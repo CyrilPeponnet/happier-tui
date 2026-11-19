@@ -48,7 +48,7 @@ To update: `git pull && npm install && npm run build` in the same folder. Withou
 
 ```
 happier-tui                          start screen: pick or start a session
-happier-tui <session-id-or-prefix>   open a session directly
+happier-tui <session-id-or-prefix>   open a session directly (or --session <id>)
 happier-tui <directory>              start a new session on this machine in that directory
 happier-tui --list [--all]           print active (or all) sessions and exit
 

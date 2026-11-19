@@ -26,7 +26,7 @@ function make(overrides: Partial<HomeState> = {}) {
 		currentId: null,
 		frame: 0,
 		rows: 20,
-		status: "status",
+		status: ["status"],
 		...overrides,
 	};
 	const home = new Home(() => state);
@@ -84,4 +84,18 @@ test("the selection moves with the arrow keys and escape clears the search first
 test("the open session is preselected when coming back to the list", () => {
 	const { selected } = make({ currentId: "c" });
 	assert.match(selected(), /api client.*◂ open/);
+});
+
+test("rows say when a session is working, needs an answer or has a reply not yet seen", () => {
+	const rows = sortSessions([
+		session({ id: "w", thinking: true, metadata: { name: "busy one", host: "alpha", flavor: "pi" } }),
+		session({ id: "q", pendingPermissionRequestCount: 1, metadata: { name: "asking one", host: "alpha", flavor: "pi" } }),
+		session({ id: "u", metadata: { name: "replied one", host: "alpha", flavor: "pi" } }),
+		session({ id: "i", activityAt: Date.now() - 2 * 3600_000, metadata: { name: "idle one", host: "alpha", flavor: "pi" } }),
+	]);
+	const lines = make({ sessions: rows, unread: new Set(["u"]) }).text().join("\n");
+	assert.match(lines, /busy one .* working$/m);
+	assert.match(lines, /asking one .* needs you$/m);
+	assert.match(lines, /replied one .* new reply$/m);
+	assert.match(lines, /idle one .* 2h$/m);
 });

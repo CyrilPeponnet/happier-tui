@@ -1,9 +1,11 @@
-import { type Component, type Focusable, fuzzyFilter, Input, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, type Focusable, fuzzyFilter, Input, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { isBusy, type Session, sessionTitle } from "../happier/client.js";
-import { LOGO_SIZE, renderLogo } from "./logo.js";
+import { LOGO_HEIGHT, LOGO_WIDTH, renderLogo } from "./logo.js";
 import { ago, c, clean, shortPath, SPINNER } from "./theme.js";
 
-const MAX_WIDTH = 96;
+/** The list takes this share of a wide terminal, and the whole width of a narrow one. */
+const WIDTH_SHARE = 0.7;
+const MIN_WIDTH = 76;
 
 /** Sessions that need the user come first, then live ones, then most recently used. */
 export function sortSessions(sessions: Session[]): Session[] {
@@ -12,12 +14,34 @@ export function sortSessions(sessions: Session[]): Session[] {
 	return [...sessions].sort((a, b) => rank(a) - rank(b) || b.activityAt - a.activityAt);
 }
 
-export function statusGlyph(s: Session, frame: number): string {
-	if (s.pendingPermissionRequestCount + s.pendingUserActionRequestCount > 0) return c.err("!");
-	if (isBusy(s)) return c.warn(SPINNER[frame % SPINNER.length] ?? "*");
-	if (s.active) return c.ok("●");
-	return c.faint("○");
+/** What a session is doing: a glyph, and a word when it is worth a look. */
+function sessionStatus(s: Session, unread: boolean, frame: number): { glyph: string; word: string } {
+	if (s.pendingPermissionRequestCount + s.pendingUserActionRequestCount > 0) {
+		return { glyph: c.err("!"), word: c.err("needs you") };
+	}
+	if (isBusy(s)) return { glyph: c.warn(SPINNER[frame % SPINNER.length] ?? "*"), word: c.warn("working") };
+	if (unread) return { glyph: c.accent("●"), word: c.accent("new reply") };
+	return { glyph: s.active ? c.ok("●") : c.faint("○"), word: "" };
 }
+
+export const statusGlyph = (s: Session, frame: number): string => sessionStatus(s, false, frame).glyph;
+
+/** The end of a path when it does not fit: the folder names are what tell sessions apart. */
+const tail = (text: string, width: number): string =>
+	visibleWidth(text) <= width ? text : `…${text.slice(text.length - (width - 1))}`;
+
+const titleOf = (s: Session): string => clean(sessionTitle(s)).replace(/\s+/g, " ");
+const pathOf = (s: Session): string => shortPath(s.metadata.path, s.metadata.homeDir);
+const OPEN = " ◂ open";
+
+/** Column widths of the session rows. */
+interface Columns {
+	title: number;
+	agent: number;
+	path: number;
+}
+/** The right column: the status word, else how long ago the session was active. */
+const STATE_WIDTH = 9;
 
 export interface HomeHost {
 	name: string;
@@ -37,7 +61,8 @@ export interface HomeState {
 	currentId: string | null;
 	frame: number;
 	rows: number;
-	status: string;
+	/** The relay and the connection, then what is live: one line each. */
+	status: string[];
 }
 
 type Entry =
@@ -60,7 +85,11 @@ export class Home implements Component, Focusable {
 	/** Escape with nothing to clear: return to the open session, if any. */
 	onBack?: () => void;
 
-	private readonly input = new Input({ prompt: c.accent("⌕ "), placeholder: "search sessions, hosts, paths" });
+	private readonly input = new Input({
+		prompt: c.accent("⌕ "),
+		placeholder: " search sessions, hosts, paths", // the space keeps the cursor off the text
+		placeholderStyle: (text) => c.faint(text),
+	});
 	private selectedKey: string | null = null;
 	private _focused = false;
 	readonly capturesViewportInput = true;
@@ -196,36 +225,46 @@ export class Home implements Component, Focusable {
 
 	render(width: number): string[] {
 		const st = this.state();
-		const block = Math.max(20, Math.min(width - 2, MAX_WIDTH));
+		// Columns sized to the sessions (all of them, so a search does not reshape the list), and the
+		// block to its columns: as wide as they need, up to a share of a wide terminal.
+		const agent = Math.min(8, Math.max(1, ...st.sessions.map((s) => String(s.metadata.flavor ?? "?").length)));
+		const titleNeed = Math.min(60, Math.max(12, ...st.sessions.map((s) => visibleWidth(titleOf(s)) + (s.id === st.currentId ? OPEN.length : 0))));
+		const pathNeed = Math.min(50, Math.max(8, ...st.sessions.map((s) => visibleWidth(pathOf(s)))));
+		// "› ● ", then title, agent, path and state with two spaces between them.
+		const fixed = 4 + 2 + agent + 2 + 2 + STATE_WIDTH;
+		const fit = Math.min(fixed + titleNeed + pathNeed, Math.floor(width * WIDTH_SHARE));
+		const block = Math.max(20, Math.min(width - 2, Math.max(MIN_WIDTH, fit)));
 		const pad = " ".repeat(Math.max(1, Math.floor((width - block) / 2)));
+		const spare = block - fixed;
+		const title = Math.min(titleNeed, Math.max(12, Math.floor(spare * 0.55)));
+		const cols: Columns = { title, agent, path: spare - title >= 8 ? spare - title : 0 };
 		const entries = this.entries(st);
 		const selected = this.selectedIndex(entries);
 
+		const name = c.accent.bold("happier-tui");
+		const tagline = c.faint("your Happier agents, from the terminal");
 		const head: string[] = [];
-		if (st.rows >= 26 && block >= LOGO_SIZE + 30) {
-			// Mark on the left, name and status beside it.
-			const beside = new Map<number, string>([
-				[3, c.bold("h a p p i e r")],
-				[4, c.faint("your agents, from the terminal")],
-				[6, st.status],
-			]);
+		if (st.rows >= 24 && block >= LOGO_WIDTH + 44) {
+			// The bunny on the left; name, then status, in a column beside it.
+			const beside = [name, tagline, "", ...st.status];
+			const top = Math.max(0, Math.floor((LOGO_HEIGHT - beside.length) / 2));
 			head.push("");
-			renderLogo(st.frame).forEach((line, row) => head.push(`${line}   ${beside.get(row) ?? ""}`));
+			renderLogo().forEach((line, row) => head.push(`${line}    ${beside[row - top] ?? ""}`));
 			head.push("");
 		} else {
-			head.push("", `${c.accent.bold("happier")}  ${st.status}`, "");
+			head.push("", `${name}  ${st.status.join(c.faint("  ·  "))}`, "");
 		}
 		head.push(...this.input.render(block), "");
 
-		const titleWidth = Math.max(12, Math.min(44, Math.floor(block * 0.45)));
 		const body: string[] = [];
 		let selectedLine = 0;
 		entries.forEach((entry, i) => {
 			if (i === selected) selectedLine = body.length;
-			body.push(this.renderEntry(entry, i === selected, st, block, titleWidth));
+			body.push(this.renderEntry(entry, i === selected, st, block, cols));
 		});
 
-		const foot = ["", c.faint("↑↓ select · enter open · type to search · ctrl+n new · ctrl+x stop/archive · tab inactive · esc back · ctrl+c quit")];
+		const keys = "↑↓ select · enter open · type to search · ctrl+n new · ctrl+x stop/archive · tab inactive · esc back · ctrl+c quit";
+		const foot = ["", ...wrapTextWithAnsi(keys, block).map((l) => c.faint(l))];
 
 		// Keep the selection on screen when the list is taller than the terminal.
 		const room = Math.max(3, st.rows - head.length - foot.length);
@@ -235,10 +274,13 @@ export class Home implements Component, Focusable {
 		if (from > 0) shown[0] = c.faint("  ↑ more");
 		if (from + room < body.length) shown[shown.length - 1] = c.faint("  ↓ more");
 
-		return [...head, ...shown, ...foot].map((line) => truncateToWidth(`${pad}${line}`, width));
+		// A short list sits a little above the middle of the screen rather than at the top.
+		const lines = [...head, ...shown, ...foot];
+		const above = Array<string>(Math.max(0, Math.floor((st.rows - lines.length) * 0.4))).fill("");
+		return [...above, ...lines].map((line) => truncateToWidth(`${pad}${line}`, width));
 	}
 
-	private renderEntry(entry: Entry, selected: boolean, st: HomeState, width: number, titleWidth: number): string {
+	private renderEntry(entry: Entry, selected: boolean, st: HomeState, width: number, cols: Columns): string {
 		switch (entry.kind) {
 			case "blank":
 				return "";
@@ -255,15 +297,18 @@ export class Home implements Component, Focusable {
 			}
 			case "session": {
 				const s = entry.session;
-				const raw = clean(sessionTitle(s)).replace(/\s+/g, " ");
 				const unread = st.unread.has(s.id);
-				const title = truncateToWidth(raw, titleWidth, "…", true);
+				const status = sessionStatus(s, unread, st.frame);
+				const open = s.id === st.currentId ? OPEN : "";
+				const title = truncateToWidth(titleOf(s), cols.title - open.length, "…", true);
 				const name = selected ? c.accent.bold(title) : unread ? c.bold(title) : s.active ? title : c.dim(title);
-				const open = s.id === st.currentId ? c.accent(" ◂ open") : "";
-				const detail = c.faint(
-					`${s.metadata.flavor ?? "?"} · ${shortPath(s.metadata.path, s.metadata.homeDir)} · ${ago(s.activityAt)}`,
-				);
-				const text = `${selected ? c.accent("› ") : "  "}${statusGlyph(s, st.frame)} ${name}  ${detail}${open}`;
+				const agent = c.faint(truncateToWidth(String(s.metadata.flavor ?? "?"), cols.agent, "…", true));
+				const path = cols.path
+					? `${c.faint(truncateToWidth(tail(pathOf(s), cols.path), cols.path, "", true))}  `
+					: "";
+				const state = status.word || c.faint(ago(s.activityAt));
+				const right = " ".repeat(Math.max(0, STATE_WIDTH - visibleWidth(state))) + state;
+				const text = `${selected ? c.accent("› ") : "  "}${status.glyph} ${name}${c.accent(open)}  ${agent}  ${path}${right}`;
 				const fitted = visibleWidth(text) > width ? truncateToWidth(text, width, "…") : text;
 				return selected ? c.selBg(truncateToWidth(fitted, width, "", true)) : fitted;
 			}

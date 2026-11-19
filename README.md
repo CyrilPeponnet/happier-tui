@@ -62,7 +62,9 @@ happier-tui --list [--all]           print active (or all) sessions and exit
 
 ### Start screen
 
-Active sessions grouped by machine. Type to search by title, host, agent or path.
+Active sessions grouped by machine, each with its agent, folder and last activity, or what it
+is doing: `working`, `needs you` (a permission request or a question) or `new reply` (not seen
+yet). Type to search by title, host, agent or path.
 
 | Key | Action |
 | --- | --- |

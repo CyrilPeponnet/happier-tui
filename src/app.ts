@@ -194,8 +194,11 @@ export class App {
 				frame: this.frame,
 				rows: this.tui.terminal.rows - this.renderRequests(this.tui.terminal.columns).length,
 				status: this.loaded
-					? `${this.client.config.serverName}  ${link}${c.dim(`  ·  ${active} active session${active === 1 ? "" : "s"} · ${online} machine${online === 1 ? "" : "s"} online`)}`
-					: c.dim(this.loadError || `Connecting to ${this.client.config.serverName}…`),
+					? [
+							`${this.client.config.serverName}  ${link}`,
+							c.dim(`${active} active session${active === 1 ? "" : "s"} · ${online} machine${online === 1 ? "" : "s"} online`),
+						]
+					: [c.dim(this.loadError || `Connecting to ${this.client.config.serverName}…`)],
 			};
 		});
 		this.home.onOpen = (id) => void this.openSession(id);
@@ -313,7 +316,7 @@ export class App {
 		this.syncPresence();
 		const anyBusy = [...this.client.sessions.values()].some((s) => this.busy(s));
 		if (anyBusy) dirty = true;
-		// The start screen's logo is animated.
+		// The start screen shows each session's age.
 		if (this.mode === "home" && !this.overlay) dirty = true;
 		this.maybeLoadEarlier();
 		if (dirty) this.tui.requestRender();

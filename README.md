@@ -143,6 +143,14 @@ session is also marked read, so the unread badge clears on your other devices.
 If a signal does not show up, run with `HAPPIER_TUI_DEBUG=/tmp/happier-tui.log`. The log records
 focus changes and, for each turn or request change, whether a signal was sent.
 
+## cmux tab restore
+
+Inside [cmux](https://cmux.com), happier-tui registers the open session as the tab's restore
+command (`happier-tui --session <id>`), so the tab comes back on that session after cmux restarts.
+cmux only restores tabs registered by its agent hooks, so happier-tui uses pi's: the tab shows as Pi.
+Quitting normally clears the entry. The restore runs with your default server: cmux does not keep
+other options such as `--server`.
+
 ## How it works
 
 ```

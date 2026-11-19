@@ -18,6 +18,7 @@ Options
   --server <id-or-name>   Use a server profile from ~/.happier/settings.json
   --server-url <url>      Override the relay URL
   --home <dir>            Happier home directory (default ~/.happier, or $HAPPIER_HOME_DIR)
+  --session <id>          Open this session (same as the positional argument)
   --agent <name>          Agent for the new session (claude, codex, pi, …); asked for otherwise
   --no-notify             No attention signal at all when an agent needs you
   --no-bell               Keep the text notification but do not ring the terminal bell
@@ -58,6 +59,7 @@ function parseArgs(argv: string[]) {
 		else if (a === "--no-notify") notify.osc = notify.bell = false;
 		else if (a === "--no-bell") notify.bell = false;
 		else if (a === "--agent") agent = value();
+		else if (a === "--session") session = value();
 		else if (a === "--server") overrides.serverId = value();
 		else if (a === "--server-url") overrides.serverUrl = value();
 		else if (a === "--home") overrides.homeDir = value();

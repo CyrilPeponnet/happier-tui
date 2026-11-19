@@ -38,6 +38,7 @@ import {
 } from "./ui/notify.js";
 import { type LocalLaunch, NewSessionFlow } from "./new-session.js";
 import { errorText, justify, machineName, questionsOf, requestSummary, shortHost, untilText } from "./ui/format.js";
+import { cmuxBind, cmuxUnbind } from "./cmux.js";
 import { SessionAutocomplete } from "./ui/autocomplete.js";
 import { PromptEditor } from "./ui/prompt-editor.js";
 import { Picker, type PickerOptions } from "./ui/picker.js";
@@ -293,6 +294,7 @@ export class App {
 	private quit(): void {
 		if (this.timer) clearInterval(this.timer);
 		this.client.close();
+		cmuxUnbind();
 		// The alt-screen renderer prints its document to the main screen on stop; leave nothing behind.
 		this.tui.setLayoutRoot(new Lines(() => []));
 		this.tui.stop();
@@ -450,6 +452,7 @@ export class App {
 		const s = this.client.sessions.get(id);
 		if (!s) return;
 		this.currentId = id;
+		cmuxBind(id);
 		this.unread.delete(id);
 		if (this.mode !== "chat") {
 			this.mode = "chat";

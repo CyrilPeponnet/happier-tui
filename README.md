@@ -6,7 +6,7 @@ Pick a session running on any of your machines, read it live, send prompts, answ
 requests, start new sessions — and get a bell or a notification from your terminal, tmux or cmux
 when an agent needs you.
 
-![happier-tui start screen](https://raw.githubusercontent.com/CyrilPeponnet/happier-tui/main/assets/main.png)
+![A tour of happier-tui: the start screen, a conversation, an agent at work, a permission request and a question](https://raw.githubusercontent.com/CyrilPeponnet/happier-tui/main/assets/demo.gif)
 
 happier-tui is an independent, unofficial client. It talks to the Happier relay directly (HTTP and
 Socket.IO, end-to-end encrypted) and is built on
@@ -66,6 +66,8 @@ Active sessions grouped by machine, each with its agent, folder and last activit
 is doing: `working`, `needs you` (a permission request or a question) or `new reply` (not seen
 yet). Type to search by title, host, agent or path.
 
+![The start screen: sessions on several machines, with what each one is doing](https://raw.githubusercontent.com/CyrilPeponnet/happier-tui/main/assets/home.png)
+
 | Key | Action |
 | --- | --- |
 | `↑` `↓`, `enter` | select, open |
@@ -121,6 +123,8 @@ under the tool call that started it. Click a folded line to unfold it, or a tool
 output; `ctrl+o` unfolds everything.
 
 ## Knowing when an agent needs you
+
+![A permission request from an agent on another machine, answered from the TUI](https://raw.githubusercontent.com/CyrilPeponnet/happier-tui/main/assets/permission.png)
 
 When a session you are not looking at finishes its turn, fails, or asks for a permission or an
 answer, happier-tui signals it through the terminal:

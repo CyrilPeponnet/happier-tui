@@ -3,8 +3,8 @@ import { isBusy, type Session, sessionTitle } from "../happier/client.js";
 import { LOGO_HEIGHT, LOGO_WIDTH, renderLogo } from "./logo.js";
 import { ago, c, clean, shortPath, SPINNER } from "./theme.js";
 
-/** The list takes this share of a wide terminal, and the whole width of a narrow one. */
-const WIDTH_SHARE = 0.7;
+/** The start screen is as wide as its table, up to this share of the terminal; centred. */
+const WIDTH_SHARE = 0.8;
 const MIN_WIDTH = 76;
 
 /** Sessions that need the user come first, then live ones, then most recently used. */
@@ -60,6 +60,8 @@ export interface HomeState {
 	unread: Set<string>;
 	currentId: string | null;
 	frame: number;
+	/** Not connected to the relay yet: the logo shines instead of drifting. */
+	connecting: boolean;
 	rows: number;
 	/** The relay and the connection, then what is live: one line each. */
 	status: string[];
@@ -226,7 +228,7 @@ export class Home implements Component, Focusable {
 	render(width: number): string[] {
 		const st = this.state();
 		// Columns sized to the sessions (all of them, so a search does not reshape the list), and the
-		// block to its columns: as wide as they need, up to a share of a wide terminal.
+		// block to its columns, up to a share of the terminal, centred in it.
 		const agent = Math.min(8, Math.max(1, ...st.sessions.map((s) => String(s.metadata.flavor ?? "?").length)));
 		const titleNeed = Math.min(60, Math.max(12, ...st.sessions.map((s) => visibleWidth(titleOf(s)) + (s.id === st.currentId ? OPEN.length : 0))));
 		const pathNeed = Math.min(50, Math.max(8, ...st.sessions.map((s) => visibleWidth(pathOf(s)))));
@@ -236,25 +238,12 @@ export class Home implements Component, Focusable {
 		const block = Math.max(20, Math.min(width - 2, Math.max(MIN_WIDTH, fit)));
 		const pad = " ".repeat(Math.max(1, Math.floor((width - block) / 2)));
 		const spare = block - fixed;
-		const title = Math.min(titleNeed, Math.max(12, Math.floor(spare * 0.55)));
+		// The table fills the block exactly, so the header, search box, list and keys share both edges;
+		// room beyond what the columns need goes to the titles.
+		const title = spare >= titleNeed + pathNeed ? spare - pathNeed : Math.min(titleNeed, Math.max(12, Math.floor(spare * 0.55)));
 		const cols: Columns = { title, agent, path: spare - title >= 8 ? spare - title : 0 };
 		const entries = this.entries(st);
 		const selected = this.selectedIndex(entries);
-
-		const name = c.accent.bold("happier-tui");
-		const tagline = c.faint("your Happier agents, from the terminal");
-		const head: string[] = [];
-		if (st.rows >= 24 && block >= LOGO_WIDTH + 44) {
-			// The bunny on the left; name, then status, in a column beside it.
-			const beside = [name, tagline, "", ...st.status];
-			const top = Math.max(0, Math.floor((LOGO_HEIGHT - beside.length) / 2));
-			head.push("");
-			renderLogo().forEach((line, row) => head.push(`${line}    ${beside[row - top] ?? ""}`));
-			head.push("");
-		} else {
-			head.push("", `${name}  ${st.status.join(c.faint("  ·  "))}`, "");
-		}
-		head.push(...this.input.render(block), "");
 
 		const body: string[] = [];
 		let selectedLine = 0;
@@ -265,6 +254,23 @@ export class Home implements Component, Focusable {
 
 		const keys = "↑↓ select · enter open · type to search · ctrl+n new · ctrl+x stop/archive · tab inactive · esc back · ctrl+c quit";
 		const foot = ["", ...wrapTextWithAnsi(keys, block).map((l) => c.faint(l))];
+
+		const name = c.accent.bold("happier-tui");
+		const tagline = c.faint("your Happier agents, from the terminal");
+		const head: string[] = [];
+		// The logo only when the whole list still fits below it: the list matters more.
+		const below = 2 + body.length + foot.length; // the search box and its blank line, the list
+		if (block >= LOGO_WIDTH + 44 && LOGO_HEIGHT + 2 + below <= st.rows) {
+			// The logo on the left; name, then status, in a column beside it.
+			const beside = [name, tagline, "", ...st.status];
+			const top = Math.max(0, Math.floor((LOGO_HEIGHT - beside.length) / 2));
+			head.push("");
+			renderLogo(st.connecting ? "shine" : "drift").forEach((line, row) => head.push(`${line}    ${beside[row - top] ?? ""}`));
+			head.push("");
+		} else {
+			head.push("", `${name}  ${st.status.join(c.faint("  ·  "))}`, "");
+		}
+		head.push(...this.input.render(block), "");
 
 		// Keep the selection on screen when the list is taller than the terminal.
 		const room = Math.max(3, st.rows - head.length - foot.length);

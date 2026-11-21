@@ -25,6 +25,7 @@ function make(overrides: Partial<HomeState> = {}) {
 		unread: new Set(),
 		currentId: null,
 		frame: 0,
+		connecting: false,
 		rows: 20,
 		status: ["status"],
 		...overrides,

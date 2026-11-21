@@ -201,6 +201,7 @@ export class App {
 				unread: this.unread,
 				currentId: this.currentId,
 				frame: this.frame,
+				connecting: !this.loaded || this.connection !== "connected",
 				rows: this.tui.terminal.rows - this.renderRequests(this.tui.terminal.columns).length,
 				status: this.loaded
 					? [

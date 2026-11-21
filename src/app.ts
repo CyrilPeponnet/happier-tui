@@ -29,6 +29,7 @@ import {
 import { CLAUDE_EFFORT_LEVELS, effortOverride, isWaitingForLimit, sessionGoal, sessionModes, sessionOptions, usageLimit } from "./happier/controls.js";
 import { latestOptions, type Row, Transcript } from "./happier/transcript.js";
 import {
+	type Attention,
 	type AttentionState,
 	attentionChange,
 	FOCUS_IN,
@@ -125,6 +126,8 @@ export class App {
 	private readonly prompted = new Set<string>();
 	/** Last observed attention-relevant state per session, to notify on changes only. */
 	private readonly attention = new Map<string, AttentionState>();
+	/** Other sessions that signalled and still wait for the user, shown in the footer (latest last). */
+	private readonly rang = new Map<string, Attention>();
 	/** Whether this terminal has focus. Only meaningful once `focusKnown` is set. */
 	private focused = true;
 	/** The terminal has reported focus at least once, i.e. it supports focus reporting. */
@@ -350,6 +353,7 @@ export class App {
 		});
 		cl.on("session-removed", (id) => {
 			this.attention.delete(id);
+			this.rang.delete(id);
 			this.entries.delete(id);
 			this.unread.delete(id);
 			if (id === this.currentId) {
@@ -453,6 +457,7 @@ export class App {
 		if (!s) return;
 		this.currentId = id;
 		cmuxBind(id);
+		this.rang.delete(id);
 		this.unread.delete(id);
 		if (this.mode !== "chat") {
 			this.mode = "chat";
@@ -1223,20 +1228,35 @@ export class App {
 	}
 
 	/**
-	 * Raises a terminal notification when a session starts needing the user (permission request,
-	 * question) or finishes its turn, unless they are already looking at it.
+	 * Only the open session rings, and only when the user is not already looking at it: with
+	 * several happier-tui open, an event rings once, in the tab showing that session.
+	 */
+	private rings(sessionId: string): boolean {
+		return (this.notify.osc || this.notify.bell) && sessionId === this.currentId && !this.watching(sessionId);
+	}
+
+	/**
+	 * Raises a terminal notification when the open session starts needing the user (permission
+	 * request, question) or finishes its turn, unless they are already looking at it. Other
+	 * sessions are listed in the footer.
 	 */
 	private noteAttention(s: Session): void {
 		const next = attentionOf(s);
 		const prev = this.attention.get(s.id);
 		const change = attentionChange(prev, next);
 		this.attention.set(s.id, next);
+		const rung = this.rang.get(s.id);
+		if (rung && (rung.kind === "request" ? !next.requestIds.includes(rung.requestId) : next.busy)) this.rang.delete(s.id);
+		if (change && s.id !== this.currentId) {
+			this.rang.delete(s.id);
+			this.rang.set(s.id, change);
+		}
 		if (prev && (prev.busy !== next.busy || prev.turnStatus !== next.turnStatus || prev.requestIds.length !== next.requestIds.length)) {
 			debug(
-				`session ${s.id.slice(0, 8)} busy ${prev.busy}->${next.busy} turn ${prev.turnStatus}->${next.turnStatus} requests ${prev.requestIds.length}->${next.requestIds.length} => ${change ? change.kind : "no change"}; focused=${this.focused} present=${this.present()} current=${s.id === this.currentId} notify=${Boolean(change && (this.notify.osc || this.notify.bell) && !this.watching(s.id))}`,
+				`session ${s.id.slice(0, 8)} busy ${prev.busy}->${next.busy} turn ${prev.turnStatus}->${next.turnStatus} requests ${prev.requestIds.length}->${next.requestIds.length} => ${change ? change.kind : "no change"}; focused=${this.focused} present=${this.present()} current=${s.id === this.currentId} notify=${Boolean(change && this.rings(s.id))}`,
 			);
 		}
-		if (!change || !(this.notify.osc || this.notify.bell) || this.watching(s.id)) return;
+		if (!change || !this.rings(s.id)) return;
 		let body: string;
 		if (change.kind === "request") {
 			const req = pendingRequests(s).find((r) => r.id === change.requestId);

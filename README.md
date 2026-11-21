@@ -126,8 +126,8 @@ output; `ctrl+o` unfolds everything.
 
 ![A permission request from an agent on another machine, answered from the TUI](https://raw.githubusercontent.com/CyrilPeponnet/happier-tui/main/assets/permission.png)
 
-When a session you are not looking at finishes its turn, fails, or asks for a permission or an
-answer, happier-tui signals it through the terminal:
+When the open session finishes its turn, fails, or asks for a permission or an answer while you
+are not looking at it, happier-tui signals it through the terminal:
 
 - **Bell.** Works everywhere. tmux flags the window in its status line, cmux and most terminals
   mark the tab.
@@ -135,7 +135,10 @@ answer, happier-tui signals it through the terminal:
   sidebar badge, banner), Ghostty, WezTerm and others; ignored by terminals that do not know it.
   Inside tmux this part needs `set -g allow-passthrough on`.
 
-Nothing is raised for the session on screen while the terminal has focus.
+Nothing is raised while you are at the terminal looking at that session. Other sessions never
+ring: they are listed in the footer, marked as on the start screen (`!` needs you, `●` new
+reply), until you open them, answer their request or they start working again. So with one
+happier-tui per session, as cmux or tmux tabs, each event rings only the tab showing that session.
 
 **Phone pushes.** While you are at the terminal (it has focus and you used it in the last three
 minutes), happier-tui reports a focused computer to the relay, as the Happier desktop app does.

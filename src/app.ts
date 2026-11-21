@@ -140,7 +140,12 @@ export class App {
 	private loadError = "";
 	private frame = 0;
 	private notice: { text: string; level: "info" | "warn" | "error"; until: number } | null = null;
-	private overlay: OverlayHandle | null = null;
+	/** The open picker, floating or docked; hide() closes it. */
+	private overlay: Pick<OverlayHandle, "hide"> | null = null;
+	/** A picker answering a request, shown above the editor so the conversation stays visible. */
+	private docked: { picker: Picker; requestId: string; cancel: () => void } | null = null;
+	/** Offered choices picked from the keyboard, highlighted in the transcript (`key` as in `prompted`). */
+	private optionPick: { key: string; index: number } | null = null;
 	private lastCtrlC = 0;
 	private everConnected = false;
 	private connection: "connecting" | "connected" | "disconnected" = "connecting";
@@ -223,6 +228,7 @@ export class App {
 			{ component: new Lines((w) => this.renderHeader(w)), basis: 2, shrink: 0 },
 			{ component: this.scroll, basis: 0, grow: 1, minSize: 3 },
 			{ component: new Lines((w) => this.renderRequests(w)), basis: "auto", shrink: 0 },
+			{ component: new Lines((w) => this.docked?.picker.render(w) ?? []), basis: "auto", shrink: 0 },
 			{ component: this.editor, basis: "auto", shrink: 1, minSize: 3 },
 			{ component: new Lines((w) => this.renderFooter(w)), basis: 1, shrink: 0 },
 		]);
@@ -231,6 +237,7 @@ export class App {
 			{ component: new Lines((w) => this.renderRequests(w)), basis: "auto", shrink: 0 },
 		]);
 		this.showHome();
+		this.view.selectedOption = () => this.choosing();
 		this.view.isBusy = () => {
 			const s = this.current();
 			return !!s && this.busy(s);
@@ -633,6 +640,7 @@ export class App {
 			this.quit();
 			return true;
 		}
+		if (this.onChoosingKey(data)) return true;
 		if (matchesKey(data, Key.escape)) {
 			const s = this.current();
 			if (this.editor.isShowingAutocomplete()) return false;
@@ -1076,7 +1084,11 @@ export class App {
 
 	// --- overlays ---
 
-	private pick(opts: Omit<PickerOptions, "onSelect" | "onCancel">): Promise<string | null> {
+	/**
+	 * Shows a picker over the screen or, answering `forRequest` in a session, above the editor; that
+	 * one closes by itself once the request is no longer pending.
+	 */
+	private pick(opts: Omit<PickerOptions, "onSelect" | "onCancel">, forRequest?: string): Promise<string | null> {
 		return new Promise((resolve) => {
 			const close = (value: string | null) => {
 				this.overlay?.hide();
@@ -1087,6 +1099,13 @@ export class App {
 			};
 			const picker = new Picker({ ...opts, onSelect: (item) => close(item.value), onCancel: () => close(null) });
 			this.overlay?.hide();
+			if (forRequest && this.mode === "chat") {
+				this.docked = { picker, requestId: forRequest, cancel: () => close(null) };
+				this.overlay = { hide: () => (this.docked = null) };
+				this.tui.setFocus(picker);
+				this.tui.requestRender();
+				return;
+			}
 			this.overlay = this.tui.showOverlay(picker, { width: "70%", minWidth: 44, maxHeight: "80%", anchor: "center" });
 		});
 	}
@@ -1105,9 +1124,10 @@ export class App {
 
 	/**
 	 * Opens the answer picker for what the open session waits on: each permission request once,
-	 * and choices the agent offered once its turn ends, unless you have started typing.
+	 * and highlights the choices the agent offered once its turn ends, unless you have started typing.
 	 */
 	private promptForRequests(s: Session): void {
+		if (this.docked && !pendingRequests(s).some((r) => r.id === this.docked?.requestId)) this.docked.cancel();
 		if (this.overlay || this.mode !== "chat" || s.id !== this.currentId) return;
 		const next = pendingRequests(s).find((r) => !this.prompted.has(`${s.id}:${r.id}`));
 		if (next) {
@@ -1120,7 +1140,7 @@ export class App {
 		const key = offer && `${s.id}:options:${offer.key}`;
 		if (!offer || !key || this.prompted.has(key) || this.editor.getText().trim()) return;
 		this.prompted.add(key);
-		this.run(() => this.chooseOption(offer.options));
+		this.optionPick = { key, index: 0 };
 	}
 
 	/** ctrl+r: answer what the agent is waiting for: a permission request, else its offered choices. */
@@ -1129,21 +1149,38 @@ export class App {
 		const req = s && pendingRequests(s)[0];
 		if (s && req) return this.answer(s, req);
 		const offer = s && this.offeredOptions(s);
-		if (!offer) {
+		if (!s || !offer) {
 			this.flash("Nothing to answer in this session.", "info");
 			return;
 		}
-		await this.chooseOption(offer.options);
+		this.optionPick = { key: `${s.id}:options:${offer.key}`, index: 0 };
+		if (this.editor.getText()) this.flash("Clear the editor to choose one of the offered replies.", "info");
 	}
 
-	private async chooseOption(options: string[]): Promise<void> {
-		const choice = await this.pick({
-			title: "Reply with",
-			noFilter: true,
-			hint: `1–${options.length} or ↑↓ enter · esc to write your own reply (ctrl+r brings this back)`,
-			items: options.map((o, i) => ({ value: o, label: `${i + 1}. ${oneLine(o)}` })),
-		});
-		if (choice) await this.submit(choice);
+	/** The offered choices being picked from the keyboard: highlighted, and the editor is empty. */
+	private choosing(): { key: string; index: number; options: string[] } | null {
+		const pick = this.optionPick;
+		const s = pick && this.mode === "chat" ? this.current() : undefined;
+		const offer = s && this.offeredOptions(s);
+		if (!s || !offer || !pick || pick.key !== `${s.id}:options:${offer.key}` || this.editor.getText()) return null;
+		return { key: offer.key, index: Math.min(pick.index, offer.options.length - 1), options: offer.options };
+	}
+
+	/** ↑↓ move the highlight over the offered choices, enter sends it, esc puts it away. */
+	private onChoosingKey(data: string): boolean {
+		const choosing = this.choosing();
+		if (!choosing || !this.optionPick) return false;
+		if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) {
+			const index = choosing.index + (matchesKey(data, Key.up) ? -1 : 1);
+			this.optionPick.index = Math.max(0, Math.min(choosing.options.length - 1, index));
+		} else if (matchesKey(data, Key.enter)) {
+			this.optionPick = null;
+			void this.submit(choosing.options[choosing.index] ?? "");
+		} else if (matchesKey(data, Key.escape)) {
+			this.optionPick = null;
+		} else return false;
+		this.tui.requestRender();
+		return true;
 	}
 
 	/** Choices the agent offered at the end of its last turn, while it waits for the reply. */
@@ -1162,7 +1199,7 @@ export class App {
 					noFilter: true,
 					items: q.options,
 					hint: "esc to answer later (ctrl+r)",
-				});
+				}, req.id);
 				if (choice === null) return;
 				answers[q.question] = [choice];
 			}
@@ -1180,7 +1217,7 @@ export class App {
 				{ value: "denied", label: "Deny" },
 				{ value: "abort", label: "Deny and stop the turn" },
 			],
-		});
+		}, req.id);
 		if (!choice) return;
 		await this.client.respondPermission(s, req, choice as "approved" | "approved_for_session" | "denied" | "abort");
 	}
@@ -1325,9 +1362,12 @@ export class App {
 			}
 			const reqs = pendingRequests(s);
 			const offered = reqs.length === 0 ? (this.offeredOptions(s)?.options.length ?? 0) : 0;
-			if (offered > 0) lines.push(` ${c.accent("❯")} ${c.dim(`${offered} choices above · click one, or ctrl+r`)}`);
+			if (offered > 0) {
+				const how = this.choosing() ? "↑↓ choose · enter send · esc dismiss · or type your own reply" : `${offered} choices above · click one, or ctrl+r`;
+				lines.push(` ${c.accent("❯")} ${c.dim(how)}`);
+			}
 			const first = reqs[0];
-			if (first) {
+			if (first && !this.docked) {
 				const more = reqs.length > 1 ? c.dim(` (+${reqs.length - 1} more)`) : "";
 				const what = questionsOf(first).length ? "Question from the agent" : `Permission: ${first.tool} ${c.dim(requestSummary(first))}`;
 				lines.push(` ${c.warn("⚠")} ${what}${more}`);
@@ -1366,7 +1406,24 @@ export class App {
 		else if (!s.active) state = c.dim("inactive · sending resumes it");
 		else state = c.ok("ready");
 		const right = `${this.busy(s) ? "" : `last activity ${agoText(s.activityAt)} · `}ctrl+s sessions · /keys `;
-		return [justify(` ${state}${c.dim("  ·  ")}${parts.join(c.dim(" · "))}`, c.faint(right), width)];
+		return [justify(` ${state}${c.dim("  ·  ")}${parts.join(c.dim(" · "))}`, this.waiting() + c.faint(right), width)];
+	}
+
+	/**
+	 * The other sessions waiting for the user, most recent first, marked as on the start screen:
+	 * "! train  ● flaky · ".
+	 */
+	private waiting(): string {
+		const items: string[] = [];
+		for (const [id, why] of [...this.rang].reverse()) {
+			const s = this.client.sessions.get(id);
+			if (!s) continue;
+			const mark = why.kind === "request" || why.failed ? c.err("!") : c.accent("●");
+			items.push(`${mark} ${truncateToWidth(sessionTitle(s), 20)}`);
+		}
+		if (items.length === 0) return "";
+		const shown = items.length > 3 ? [...items.slice(0, 3), c.dim(`+${items.length - 3}`)] : items;
+		return `${shown.join("  ")}${c.faint(" · ")}`;
 	}
 }
 

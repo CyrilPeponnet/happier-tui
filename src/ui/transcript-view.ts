@@ -79,6 +79,10 @@ export class TranscriptView implements Component {
 	lastWidth = 80;
 	/** Whether the agent is still working on the last turn (which then stays unfolded). */
 	isBusy: () => boolean = () => false;
+	/** The offered choice highlighted for the keyboard: the row offering it and its position. */
+	selectedOption: () => { key: string; index: number } | null = () => null;
+	/** `selectedOption()` as of the current render. */
+	private selected: { key: string; index: number } | null = null;
 	/** Asked once per subagent call whose transcript is not loaded yet. */
 	onSubagent?: (callId: string) => void;
 	private cache = new Map<string, { sig: string } & RenderedRow>();
@@ -121,6 +125,7 @@ export class TranscriptView implements Component {
 
 	render(width: number): string[] {
 		this.lastWidth = width;
+		this.selected = this.selectedOption();
 		const t = this.transcript;
 		const inner = Math.max(10, width - 2);
 		if (!t || t.list().length === 0) {
@@ -157,6 +162,8 @@ export class TranscriptView implements Component {
 
 	private signature(row: Row, t: Transcript, width: number): string {
 		let sig = `${width}|${this.options.expandTools ? 1 : 0}${this.options.showThinking ? 1 : 0}|${row.seq ?? "live"}`;
+		const selected = this.selected;
+		if (selected?.key === row.key) sig += `|o${selected.index}`;
 		for (const item of row.items) {
 			if (item.kind === "tool") {
 				sig += `|t${t.results.has(item.callId) ? 1 : 0}${t.failures.size}${t.sidechains.get(item.callId)?.version ?? ""}`;
@@ -235,6 +242,10 @@ export class TranscriptView implements Component {
 				const { options } = splitOptions(clean(item.text));
 				const first = lines.length + rendered.length - options.length;
 				options.forEach((o, k) => clicks.push([first + k, `option:${o}`]));
+				const selected = this.selected;
+				const at = selected?.key === row.key ? rendered.length - options.length + selected.index : -1;
+				const chosen = options[selected?.index ?? -1];
+				if (at >= 0 && chosen) rendered[at] = `${c.accent("→")} ${c.accent.bold(chosen.replace(/\s+/g, " "))}`;
 			}
 			if (item.kind === "tool" && !isTerminalOutput(item)) {
 				const key = `${run ? "run" : "tool"}:${item.callId}`;

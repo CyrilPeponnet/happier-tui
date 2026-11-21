@@ -104,9 +104,11 @@ Type `@` to mention a file: completion lists the files of the session's folder o
 | `/rename` | rename the session |
 | `/sessions`, `/new-session`, `/abort`, `/stop-session`, `/archive`, `/reload`, `/keys`, `/quit` | |
 
-When the agent ends its turn offering choices, a picker opens: press the number or use the
-arrows to send one as your reply, or `esc` to write your own (`ctrl+r` brings it back). You can
-also click a choice in the transcript. Permission requests open the same way.
+When the agent ends its turn offering choices, the first one is highlighted in the transcript:
+`↑` `↓` move the highlight and `enter` sends it as your reply. Typing writes your own reply
+instead; `esc` puts the highlight away (`ctrl+r` brings it back). You can also click a choice.
+Permission requests and questions open a picker above the editor, which closes by itself once
+the request is answered elsewhere.
 
 Anything else starting with `/` goes to the agent, whose own commands are offered in
 autocomplete. The agent publishes them once it has handled a first message, so a new session

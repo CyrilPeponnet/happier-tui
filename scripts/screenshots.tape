@@ -24,16 +24,18 @@ Screenshot assets/home.png
 # VHS saves the frame a moment later: keep the next key out of it.
 Sleep 1s
 
-# A finished turn offering reply choices: dismiss them, look, bring them back and pick one.
+# A finished turn offering reply choices: move the highlight to one and send it.
 Type "rate"
 Sleep 500ms
 Enter
-Sleep 2s
-Escape
-Sleep 1.5s
-Ctrl+R
+Sleep 2.5s
+Down
+Sleep 800ms
+Down
+Sleep 800ms
+Up
 Sleep 1s
-Type "2"
+Enter
 Sleep 6s
 
 # An agent at work on another machine: a turn in progress shows every tool, diffs included.

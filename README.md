@@ -17,7 +17,7 @@ behind Pi's terminal UI.
 
 You need two things on the machine first:
 
-- **Node.js 20 or newer** — check with `node --version`; install with `brew install node` on macOS
+- **Node.js 22.19 or newer**, 24 LTS recommended — check with `node --version`; install with `brew install node` on macOS
   or from [nodejs.org](https://nodejs.org).
 - **The Happier CLI, logged in** — `happier auth login`. happier-tui reuses the credentials the CLI
   stores under `~/.happier`; it has no login of its own.

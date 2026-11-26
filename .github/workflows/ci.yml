@@ -13,7 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: [20, 22, 24]
+        # The declared minimum (package.json engines, set by @earendil-works/pi-tui) and the current LTS.
+        node: ["22.19", 24]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -24,3 +25,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # Install the published package as users get it, refusing an engine mismatch, and run it.
+      - run: npm pack
+      - run: npm install -g --engine-strict ./happier-tui-*.tgz
+      - run: happier-tui --help

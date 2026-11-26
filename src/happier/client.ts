@@ -95,6 +95,25 @@ export interface MessagePage {
 	nextAfterSeq: number | null;
 }
 
+/** A conversation an agent keeps on a machine, which a new Happier session can continue. */
+export interface AgentSession {
+	/** The agent's own id, as `spawnSession({ resume })` takes it. */
+	id: string;
+	title?: string;
+	cwd?: string;
+	updatedAt: number;
+}
+
+/** Where each agent keeps its conversations, as the daemon's session listing names it. */
+const AGENT_SESSION_SOURCES: Record<string, Obj> = {
+	claude: { kind: "claudeConfig" },
+	codex: { kind: "codexHome", home: "user" },
+	pi: { kind: "piAgentDir" },
+};
+
+/** Agents whose own sessions a new Happier session can continue. */
+export const canResume = (agent: string): boolean => agent in AGENT_SESSION_SOURCES;
+
 export type SpawnResult =
 	| { type: "success"; sessionId?: string }
 	| { type: "requestToApproveDirectoryCreation"; directory: string }
@@ -818,7 +837,14 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 	/** Starts a new agent session on a machine. The daemon creates the session and its key. */
 	async spawnSession(
 		machine: Machine,
-		opts: { directory: string; agent: string; approveNewDirectory?: boolean; permissionMode?: string },
+		opts: {
+			directory: string;
+			agent: string;
+			approveNewDirectory?: boolean;
+			permissionMode?: string;
+			/** The agent's own session to continue, e.g. a pi session started outside Happier. */
+			resume?: string;
+		},
 	): Promise<SpawnResult> {
 		const params: Obj = {
 			type: "spawn-in-directory",
@@ -828,6 +854,7 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 			spawnNonce: randomUUID(),
 		};
 		if (opts.approveNewDirectory) params.approvedNewDirectoryCreation = true;
+		if (opts.resume) params.resume = opts.resume;
 		if (opts.permissionMode) {
 			params.permissionMode = opts.permissionMode;
 			params.permissionModeUpdatedAt = Date.now();
@@ -841,6 +868,31 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 		}
 		const msg = typeof res?.errorMessage === "string" ? res.errorMessage : "Spawn failed";
 		return { type: "error", errorMessage: msg };
+	}
+
+	/** The agent's own conversations on a machine, most recent first, including ones started outside Happier. */
+	async listAgentSessions(machine: Machine, agent: string): Promise<AgentSession[]> {
+		const source = AGENT_SESSION_SOURCES[agent];
+		if (!source) return [];
+		const res = (await this.machineRpc(machine, "daemon.directSessions.candidates.list", {
+			machineId: machine.id,
+			providerId: agent,
+			source,
+			limit: 500,
+		})) as Obj;
+		if (res?.ok !== true || !Array.isArray(res.candidates)) {
+			throw new HappierError(`Could not list ${agent} sessions: ${String(res?.error ?? res?.errorCode ?? "no answer")}`);
+		}
+		return res.candidates
+			.filter(isObj)
+			.filter((c) => typeof c.remoteSessionId === "string" && c.archived !== true)
+			.map((c) => ({
+				id: c.remoteSessionId as string,
+				title: typeof c.title === "string" ? c.title : undefined,
+				cwd: isObj(c.details) && typeof c.details.cwd === "string" ? c.details.cwd : undefined,
+				updatedAt: typeof c.updatedAtMs === "number" ? c.updatedAtMs : 0,
+			}))
+			.sort((a, b) => b.updatedAt - a.updatedAt);
 	}
 
 	// --- RPC ---

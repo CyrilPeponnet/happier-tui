@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { type HappierClient, HappierError, type Machine } from "./happier/client.js";
+import { canResume, type HappierClient, HappierError, type Machine } from "./happier/client.js";
 import { errorText, machineName, shortHost } from "./ui/format.js";
 import type { PickerOptions } from "./ui/picker.js";
 import { agoText, shortPath } from "./ui/theme.js";
@@ -21,6 +21,14 @@ export interface LocalLaunch {
 	directory: string;
 	/** Agent to start; asked for when omitted. */
 	agent?: string;
+	/** The agent's own session to continue, skipping the question. */
+	resume?: string;
+}
+
+/** The same folder, whichever spelling macOS gave it ("/tmp" is "/private/tmp"). */
+function samePath(a: string, b: string): boolean {
+	const norm = (p: string) => p.replace(/\/+$/, "").replace(/^\/private(?=\/(tmp|var|etc)(\/|$))/, "");
+	return norm(a) === norm(b);
 }
 
 /** The "new session" wizard: pick a machine, an agent and a directory, then spawn. */
@@ -76,8 +84,12 @@ export class NewSessionFlow {
 		const directory = local?.directory ?? (await this.pickDirectory(machine));
 		if (!directory) return null;
 
-		this.ui.flash(`Starting ${agent} in ${directory}…`, "info", 60_000);
-		const res = await this.ui.client.spawnSession(machine, { directory, agent });
+		const choice = local?.resume ? { resume: local.resume } : await this.pickConversation(machine, agent, directory);
+		if (!choice) return null;
+		if (choice.open) return choice.open;
+
+		this.ui.flash(`${choice.resume ? "Continuing" : "Starting"} ${agent} in ${directory}…`, "info", 60_000);
+		const res = await this.ui.client.spawnSession(machine, { directory, agent, resume: choice.resume });
 		if (res.type === "error") throw new HappierError(`Could not start session: ${res.errorMessage}`);
 		if (res.type === "requestToApproveDirectoryCreation") {
 			throw new HappierError(`Directory does not exist: ${res.directory}`);
@@ -89,6 +101,49 @@ export class NewSessionFlow {
 		await this.ui.client.waitForSession(res.sessionId);
 		this.ui.clearNotice();
 		return res.sessionId;
+	}
+
+	/**
+	 * Offers the agent's earlier conversations in the folder, including ones started outside
+	 * Happier: a new session, one continuing a conversation (`resume`), or the Happier session
+	 * already continuing it (`open`). Null when dismissed.
+	 */
+	private async pickConversation(
+		machine: Machine,
+		agent: string,
+		directory: string,
+	): Promise<{ resume?: string; open?: string } | null> {
+		if (!canResume(agent)) return {};
+		this.ui.flash(`Looking for earlier ${agent} sessions in ${directory}…`, "info", 15_000);
+		const found = await this.ui.client.listAgentSessions(machine, agent).catch((e) => {
+			this.ui.flash(`Could not list earlier ${agent} sessions: ${errorText(e)}`, "warn");
+			return [];
+		});
+		this.ui.clearNotice();
+		const here = found.filter((c) => c.cwd && samePath(c.cwd, directory));
+		if (here.length === 0) return {};
+		// The Happier session already continuing each conversation, if any: open it instead.
+		const happier = new Map<string, string>();
+		for (const s of [...this.ui.client.sessions.values()].sort((a, b) => a.activityAt - b.activityAt)) {
+			const id = s.metadata[`${agent}SessionId`];
+			if (typeof id === "string" && !s.archivedAt) happier.set(id, s.id);
+		}
+		const home = typeof machine.metadata.homeDir === "string" ? machine.metadata.homeDir : undefined;
+		const value = await this.ui.pick({
+			title: `${agent} in ${shortPath(directory, home)} · new, or continue a conversation`,
+			noFilter: here.length < 8,
+			items: [
+				{ value: "\0new", label: "New session" },
+				...here.map((c) => ({
+					value: c.id,
+					label: (c.title ?? c.id).replace(/\s+/g, " "),
+					description: `${agoText(c.updatedAt)}${happier.has(c.id) ? " · open in Happier" : ""}`,
+				})),
+			],
+		});
+		if (value === null) return null;
+		if (value === "\0new") return {};
+		return happier.has(value) ? { open: happier.get(value) } : { resume: value };
 	}
 
 	/** The machine this computer's daemon registered as: by stored id, else by host name. */

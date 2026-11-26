@@ -53,6 +53,8 @@ happier-tui <directory>              start a new session on this machine in that
 happier-tui --list [--all]           print active (or all) sessions and exit
 
   --agent <name>          agent for the new session (claude, codex, pi, …); asked for otherwise
+  --resume <id>           continue that conversation of the agent (its own session id), with
+                          a directory and --agent
   --server <id-or-name>   server profile from ~/.happier/settings.json
   --server-url <url>      override the relay URL
   --home <dir>            Happier home (default ~/.happier, or $HAPPIER_HOME_DIR)
@@ -66,12 +68,17 @@ Active sessions grouped by machine, each with its agent, folder and last activit
 is doing: `working`, `needs you` (a permission request or a question) or `new reply` (not seen
 yet). Type to search by title, host, agent or path.
 
+For Claude, Codex and pi, a new session can also continue one of the agent's earlier
+conversations in that directory, including ones started outside Happier (a plain `pi` or
+`claude` in a terminal): after the directory, pick one from the list, newest first. One that a
+Happier session already continues opens that session instead.
+
 ![The start screen: sessions on several machines, with what each one is doing](https://raw.githubusercontent.com/CyrilPeponnet/happier-tui/main/assets/home.png)
 
 | Key | Action |
 | --- | --- |
 | `↑` `↓`, `enter` | select, open |
-| `ctrl+n` | new session: machine → agent → directory |
+| `ctrl+n` | new session: machine → agent → directory, then new or an earlier conversation |
 | `ctrl+x` | stop the selected session's agent, archive the session, or both |
 | `tab` | show or hide inactive sessions |
 | `esc` | clear the search, then go back to the open session |

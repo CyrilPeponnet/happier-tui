@@ -38,7 +38,7 @@ Sleep 1s
 Enter
 Sleep 6s
 
-# An agent at work on another machine: a turn in progress shows every tool, diffs included.
+# An agent at work on another machine: finished tools fold as it goes, the running one stays open.
 Ctrl+S
 Sleep 1s
 Type "arm64"

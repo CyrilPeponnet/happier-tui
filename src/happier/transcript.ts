@@ -20,6 +20,8 @@ export type Item =
 export interface ToolResult {
 	output: unknown;
 	isError: boolean;
+	/** Output so far of a tool still running, streamed live; the final result replaces it. */
+	partial?: boolean;
 }
 
 export interface Usage {
@@ -31,7 +33,8 @@ export interface Usage {
 /** What one record contributes besides visible items. */
 export interface Normalized {
 	items: Item[];
-	results: Array<{ callId: string; result: ToolResult }>;
+	/** `append`: a partial result continues the previous one instead of replacing it. */
+	results: Array<{ callId: string; result: ToolResult; append?: boolean }>;
 	usage?: Usage;
 	/** Text of a turn failure, so the same text reported as terminal output is not shown twice. */
 	failure?: string;
@@ -138,9 +141,15 @@ function normalizeAcp(data: unknown, out: Normalized, streaming: boolean, codex:
 		case "tool-result":
 		case "tool-call-result": {
 			const callId = str(data.callId);
-			if (callId) {
-				out.results.push({ callId, result: { output: maybeJson(data.output), isError: data.isError === true } });
+			if (!callId) return;
+			const output = maybeJson(data.output);
+			// A running command's output so far (pi), or the latest piece of it (terminals).
+			if (isObj(output) && output._stream === true) {
+				const text = [str(output.stdoutChunk), str(output.stderrChunk)].filter(Boolean).join("");
+				out.results.push({ callId, result: { output: text, isError: false, partial: true }, append: output._terminal === true });
+				return;
 			}
+			out.results.push({ callId, result: { output, isError: data.isError === true } });
 			return;
 		}
 		case "terminal-output": {
@@ -457,6 +466,8 @@ export class Transcript {
 	private rows = new Map<string, Row>();
 	private ordered: Row[] | null = null;
 	readonly results = new Map<string, ToolResult>();
+	/** Bumped on every change of a call's result, so views notice streamed output. */
+	readonly resultVersions = new Map<string, number>();
 	/** Failure texts already shown as a "Turn failed" notice. */
 	readonly failures = new Set<string>();
 	usage: Usage = {};
@@ -512,7 +523,7 @@ export class Transcript {
 				this.usageSeq = row.seq;
 			}
 		}
-		for (const r of n.results) this.results.set(r.callId, r.result);
+		for (const r of n.results) this.setResult(r.callId, r.result, r.append);
 		if (n.failure && !this.failures.has(n.failure)) {
 			this.failures.add(n.failure);
 			this.ordered = null;
@@ -524,6 +535,15 @@ export class Transcript {
 		return true;
 	}
 	private usageSeq: number | undefined;
+
+	/** A final result always wins; streamed output only fills in until it arrives. */
+	private setResult(callId: string, result: ToolResult, append?: boolean): void {
+		const prev = this.results.get(callId);
+		if (result.partial && prev && !prev.partial) return;
+		const output = result.partial && append && prev?.partial ? `${prev.output}${result.output}` : result.output;
+		this.results.set(callId, { ...result, output });
+		this.resultVersions.set(callId, (this.resultVersions.get(callId) ?? 0) + 1);
+	}
 
 	/** Appends text to a live stream segment (ephemeral delta). */
 	appendDelta(key: string, text: string, baseLength: number): boolean {

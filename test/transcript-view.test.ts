@@ -39,6 +39,43 @@ test("a turn in progress, or expanded output, shows every tool", () => {
 	assert.match(plain(view.render(100)), /Bash npm test/);
 });
 
+test("in a turn in progress, finished tools fold and the last one stays open", () => {
+	const t = new Transcript();
+	t.upsert({ id: "1", seq: 1, createdAt: 0 }, user("look around"));
+	["a", "b", "c"].forEach((id, i) => {
+		t.upsert({ id: `${id}1`, seq: 2 + i * 2, createdAt: 1 }, acp({ type: "tool-call", callId: id, name: "Bash", input: { command: `ls ${id}` } }));
+		t.upsert({ id: `${id}2`, seq: 3 + i * 2, createdAt: 1 }, acp({ type: "tool-result", callId: id, output: `out ${id}` }));
+	});
+	const view = new TranscriptView();
+	view.setTranscript(t);
+	view.isBusy = () => true;
+	const text = plain(view.render(100));
+	assert.match(text, /▸ 2 tools · Bash ×2/);
+	assert.match(text, /Bash ls c\s*out c/);
+	assert.doesNotMatch(text, /out a|✓/);
+});
+
+test("streamed output shows its latest lines until the final result replaces it, whatever the order", () => {
+	const t = new Transcript();
+	t.upsert({ id: "1", seq: 1, createdAt: 0 }, user("run it"));
+	t.upsert({ id: "2", seq: 2, createdAt: 1 }, acp({ type: "tool-call", callId: "b", name: "Bash", input: { command: "make" } }));
+	const chunk = (text: string) => acp({ type: "tool-result", callId: "b", output: { _stream: true, stdoutChunk: text } });
+	t.upsert({ id: "live1", createdAt: 2 }, chunk("one\ntwo"));
+	t.upsert({ id: "live2", createdAt: 3 }, chunk("one\ntwo\nthree\nfour\nfive"));
+	const view = new TranscriptView();
+	view.setTranscript(t);
+	view.isBusy = () => true;
+	let text = plain(view.render(100));
+	assert.match(text, /○ Bash make/);
+	assert.match(text, /earlier lines[\s\S]*five/);
+	assert.doesNotMatch(text, /_stream|stdoutChunk/);
+	t.upsert({ id: "3", seq: 3, createdAt: 4 }, acp({ type: "tool-result", callId: "b", output: "built" }));
+	t.upsert({ id: "live3", createdAt: 5 }, chunk("late piece"));
+	text = plain(view.render(100));
+	assert.match(text, /● Bash make[\s\S]*built/);
+	assert.doesNotMatch(text, /late piece/);
+});
+
 test("a step is named by the agent's description, with the command as detail", () => {
 	const item = { kind: "tool" as const, callId: "x", name: "Bash", input: { command: "ls -la", description: "List files" }, description: "List files" };
 	assert.deepEqual(toolSummary(item), { name: "Bash", arg: "List files", detail: "ls -la" });

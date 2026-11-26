@@ -144,7 +144,8 @@ export class TranscriptView implements Component {
 			live.add(row.key);
 			this.rowStarts.push({ key: row.key, start: out.length });
 			const layout = layouts.get(row.key) ?? NO_LAYOUT;
-			const sig = `${this.signature(row, t, width)}|${this.toggles}|${[...layout.runs.keys()].join()}|${layout.hidden.size}|${layout.summary ?? ""}`;
+			const runs = [...layout.runs].map(([id, tools]) => `${id}:${tools.length}`).join();
+			const sig = `${this.signature(row, t, width)}|${this.toggles}|${runs}|${layout.hidden.size}|${layout.summary ?? ""}`;
 			let entry = this.cache.get(row.key);
 			if (!entry || entry.sig !== sig) {
 				entry = { sig, ...this.renderRow(row, t, inner, layout) };
@@ -166,7 +167,7 @@ export class TranscriptView implements Component {
 		if (selected?.key === row.key) sig += `|o${selected.index}`;
 		for (const item of row.items) {
 			if (item.kind === "tool") {
-				sig += `|t${t.results.has(item.callId) ? 1 : 0}${t.failures.size}${t.sidechains.get(item.callId)?.version ?? ""}`;
+				sig += `|t${t.resultVersions.get(item.callId) ?? 0}${t.failures.size}${t.sidechains.get(item.callId)?.version ?? ""}`;
 			}
 			else sig += `|${item.kind[0]}${item.text.length}${"streaming" in item && item.streaming ? "s" : ""}`;
 		}
@@ -174,8 +175,9 @@ export class TranscriptView implements Component {
 	}
 
 	/**
-	 * Splits the transcript into turns (a user message and what followed it). In a finished turn,
-	 * consecutive tool calls fold into one line, unless tool output is expanded; every finished
+	 * Splits the transcript into turns (a user message and what followed it). Consecutive tool calls
+	 * fold into one line, unless tool output is expanded; in the turn still running, the last tool
+	 * and the ones not done yet stay open, so what the agent is doing stays in view. Every finished
 	 * turn ends with a summary line.
 	 */
 	private layout(t: Transcript): Map<string, RowLayout> {
@@ -185,9 +187,10 @@ export class TranscriptView implements Component {
 		if (starts[0] !== 0) starts.unshift(0);
 		starts.forEach((from, n) => {
 			const to = n + 1 < starts.length ? starts[n + 1]! : rows.length;
-			const last = n + 1 === starts.length;
-			if (last && this.isBusy()) return;
+			const running = n + 1 === starts.length && this.isBusy();
 			const turn = rows.slice(from, to);
+			const lastTool = running ? turn.flatMap((r) => r.items).findLast((i) => i.kind === "tool")?.callId : undefined;
+			const open = (tool: Tool) => running && (tool.callId === lastTool || !t.results.get(tool.callId) || !!t.results.get(tool.callId)?.partial);
 			const layout = (r: Row) =>
 				out.get(r.key) ?? out.set(r.key, { runs: new Map(), opened: new Map(), hidden: new Set() }).get(r.key)!;
 
@@ -208,11 +211,13 @@ export class TranscriptView implements Component {
 				for (const item of row.items) {
 					if (item.kind === "tool" && !isTerminalOutput(item)) {
 						tools++;
-						run.push({ row, tool: item });
+						if (open(item)) close();
+						else run.push({ row, tool: item });
 					} else if (item.kind !== "thinking" || this.options.showThinking) close();
 				}
 			}
 			close();
+			if (running) return;
 
 			const user = turn[0]?.items[0]?.kind === "user" ? turn[0] : undefined;
 			const end = turn.at(-1);
@@ -360,7 +365,7 @@ export class TranscriptView implements Component {
 		const step = (i: Extract<Item, { kind: "tool" }>) => {
 			const { name, arg } = toolSummary(i);
 			const r = sub.results.get(i.callId);
-			const dot = !r ? c.warn("○") : r.isError ? c.err("●") : c.ok("●");
+			const dot = !r || r.partial ? c.warn("○") : r.isError ? c.err("●") : c.ok("●");
 			return `${dot} ${clean(name)}${arg ? ` ${c.dim(clean(arg))}` : ""}`;
 		};
 		if (!this.options.expandTools) {
@@ -386,8 +391,9 @@ export class TranscriptView implements Component {
 
 	private renderTool(item: Extract<Item, { kind: "tool" }>, result: ToolResult | undefined, t: Transcript, width: number): string[] {
 		const { name, arg, detail } = toolSummary(item);
-		const bg = !result ? c.toolBg.running : result.isError ? c.toolBg.err : c.toolBg.ok;
-		const dot = !result ? c.warn("○") : result.isError ? c.err("●") : c.ok("●");
+		const done = result && !result.partial;
+		const bg = !done ? c.toolBg.running : result.isError ? c.toolBg.err : c.toolBg.ok;
+		const dot = !done ? c.warn("○") : result.isError ? c.err("●") : c.ok("●");
 		// The panel takes a column of padding on each side.
 		const inner = Math.max(4, width - 2);
 		const head = `${dot} ${c.tool.bold(clean(name))}${arg ? ` ${c.dim(clean(arg))}` : ""}`;
@@ -401,8 +407,11 @@ export class TranscriptView implements Component {
 		if (result && text) {
 			const max = this.options.expandTools || this.full.has(item.callId) ? EXPANDED_RESULT_LINES : COLLAPSED_RESULT_LINES;
 			const raw = text.split("\n");
+			// Streamed output: its latest lines, as a terminal would show them.
+			const shown = result.partial ? raw.slice(-max) : raw.slice(0, max);
 			lines.push("");
-			for (const line of raw.slice(0, max)) {
+			if (result.partial && raw.length > max) lines.push(c.faint(`… ${raw.length - max} earlier lines`));
+			for (const line of shown) {
 				const color = result.isError
 					? c.err
 					: line.startsWith("@@")
@@ -414,7 +423,7 @@ export class TranscriptView implements Component {
 								: c.soft;
 				lines.push(color(truncateToWidth(line, inner)));
 			}
-			if (raw.length > max) lines.push(c.faint(`… ${raw.length - max} ${MORE_HINT}`));
+			if (!result.partial && raw.length > max) lines.push(c.faint(`… ${raw.length - max} ${MORE_HINT}`));
 		}
 		return panel(lines, width, bg);
 	}

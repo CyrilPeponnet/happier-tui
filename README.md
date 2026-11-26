@@ -125,8 +125,9 @@ numbers and when each limit resets. Plan limits are the ones the agent last repo
 reply, so a session shows them after its first turn.
 
 Above the editor, the TUI shows what needs you or is pending: permission requests and questions,
-messages waiting in the queue, the session's goal and a usage-limit wait. Once a turn is over, its tool calls
-fold into one line and the turn ends with how long it took; a subagent's work shows as one line
+messages waiting in the queue, the session's goal and a usage-limit wait. Finished tool calls fold into one
+line as the agent goes, while the one at work stays open with its latest output; a finished turn
+ends with how long it took; a subagent's work shows as one line
 under the tool call that started it. Click a folded line to unfold it, or a tool to see all its
 output; `ctrl+o` unfolds everything.
 

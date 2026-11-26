@@ -277,7 +277,7 @@ function normalizeEvent(data: unknown, out: Normalized): void {
 			const when = endsAt
 				? ` — resets at ${new Date(endsAt * (endsAt < 1e12 ? 1000 : 1)).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}`
 				: "";
-			out.items.push({ kind: "notice", text: `Usage limit reached${when}. /limit to resume automatically.`, level: "warn" });
+			out.items.push({ kind: "notice", text: `Usage limit reached${when}. /usage to resume automatically.`, level: "warn" });
 			return;
 		}
 		case "context-compaction": {

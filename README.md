@@ -100,7 +100,7 @@ Type `@` to mention a file: completion lists the files of the session's folder o
 | `/queue` | edit or cancel messages still waiting to be sent |
 | `/tree` | branch into a new session from an earlier message, which is put back in the editor to rewrite (Codex sessions can also roll back in place) |
 | `/goal [text\|clear]` | show, set or clear the session's goal (Claude, Codex) |
-| `/limit` | after a usage limit: resume automatically when it resets, or check now |
+| `/usage` | context and plan limits, with when they reset; after a usage limit, resume automatically when it resets, or check now |
 | `/rename` | rename the session |
 | `/sessions`, `/new-session`, `/abort`, `/stop-session`, `/archive`, `/reload`, `/keys`, `/quit` | |
 
@@ -117,6 +117,12 @@ message: Claude includes its built-ins (`/compact`, `/clear`, `/context`, …), 
 extensions and skills, since its other built-ins belong to its own terminal UI (the commands
 above cover the model, thinking level, rename and `/tree`). `/compact` works with every agent.
 Model, mode and thinking-level changes apply from your next message.
+
+The footer shows how full the context is, and for Claude and Codex the plan limits of the
+agent's account (5-hour, weekly), as rings like the Happier app's: `◔ ctx  ◑ 5h  ○ wk`, from
+`○` empty to `●` full, amber from 70% and red from 90%. Click them, or type `/usage`, for the
+numbers and when each limit resets. Plan limits are the ones the agent last reported with a
+reply, so a session shows them after its first turn.
 
 Above the editor, the TUI shows what needs you or is pending: permission requests and questions,
 messages waiting in the queue, the session's goal and a usage-limit wait. Once a turn is over, its tool calls
@@ -192,6 +198,8 @@ of CLI 0.2.20, so a relay or CLI upgrade may require changes here.
 - Direct sessions (transcript kept on the machine, not the relay) are listed but show no transcript.
 - Images and attachments are neither shown nor sent.
 - Of the per-model options, only the thinking level is offered.
+- Plan limits come from what the agent reports; the usage of accounts connected in the Happier
+  app's settings (Connected services) is not read.
 - Out of scope, as the Happier app covers them: git, terminals, file browsing, moving sessions
   between machines.
 

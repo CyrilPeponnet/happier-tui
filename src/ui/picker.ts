@@ -14,6 +14,8 @@ import { c, selectListTheme } from "./theme.js";
 
 export interface PickerOptions {
 	title: string;
+	/** Lines shown above the list, e.g. the usage meters. */
+	header?: string[];
 	items: SelectItem[];
 	hint?: string;
 	/** Hide the type-to-filter input (short fixed menus). */
@@ -97,10 +99,12 @@ export class Picker implements Component, Focusable {
 	render(width: number): string[] {
 		const inner = Math.max(10, width - 4);
 		const body: string[] = [];
+		if (this.opts.header) body.push(...this.opts.header, "");
 		if (!this.opts.noFilter) {
 			body.push(...this.input.render(inner), "");
 		}
-		body.push(...this.list.render(inner));
+		if (this.opts.items.length) body.push(...this.list.render(inner));
+		else if (body.at(-1) === "") body.pop();
 		if (this.opts.hint) body.push("", c.faint(truncateToWidth(this.opts.hint, inner)));
 
 		const title = truncateToWidth(` ${this.opts.title} `, inner - 1);

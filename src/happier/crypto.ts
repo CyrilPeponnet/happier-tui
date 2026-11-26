@@ -124,3 +124,30 @@ export function machineKeyFromLegacySecret(secret: Uint8Array): Uint8Array {
 	const seed = deriveKey(secret, "Happy EnCoder", ["content"]);
 	return new Uint8Array(createHash("sha512").update(seed).digest()).slice(0, 32);
 }
+
+// --- account-scoped blobs ---------------------------------------------------
+
+/** Kind bytes of account-scoped blobs (packages/protocol/src/crypto/accountScopedCipher.ts). */
+const ACCOUNT_SCOPED_KINDS = { provider_account_usage_snapshot: 6 } as const;
+
+/**
+ * Opens an account-wide blob, such as a provider usage snapshot:
+ * base64(0xA1 || kind || nonce(24) || secretbox(json)), keyed by
+ * HMAC-SHA512(account machine key, "happier:account_scoped:<kind>:v1")[0..32].
+ */
+export function openAccountScoped(
+	machineKey: Uint8Array,
+	kind: keyof typeof ACCOUNT_SCOPED_KINDS,
+	ciphertext: string,
+): unknown | null {
+	const bytes = b64decode(ciphertext);
+	if (bytes.length < 2 + 24 + nacl.secretbox.overheadLength || bytes[0] !== 0xa1 || bytes[1] !== ACCOUNT_SCOPED_KINDS[kind]) return null;
+	const key = hmac512(machineKey, new TextEncoder().encode(`happier:account_scoped:${kind}:v1`)).slice(0, 32);
+	const opened = nacl.secretbox.open(bytes.slice(26), bytes.slice(2, 26), key);
+	if (!opened) return null;
+	try {
+		return parseValue(new TextDecoder().decode(opened));
+	} catch {
+		return null;
+	}
+}

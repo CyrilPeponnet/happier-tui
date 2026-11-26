@@ -15,6 +15,7 @@ import {
 	decryptBytes,
 	encryptBytes,
 	machineKeyFromLegacySecret,
+	openAccountScoped,
 	openDataKeyEnvelope,
 } from "./crypto.js";
 
@@ -660,6 +661,37 @@ export class HappierClient extends EventEmitter<ClientEvents> {
 			: await this.machineRpc(await this.sessionMachine(session), `daemon.sessionUsageLimit.${action}`, params)) as Obj;
 		expectOk(res, "Usage limit");
 		return res;
+	}
+
+	/** Whether the account keeps account-wide records sealed ("e2ee") or in the clear ("plain"). */
+	private encryptionMode?: Promise<string>;
+
+	/**
+	 * The provider usage records the session's agent reported (plan limits such as Claude's 5-hour
+	 * and weekly windows), opened. The CLI lists their ids in the session metadata.
+	 */
+	async providerUsageRecords(session: Session): Promise<Obj[]> {
+		const refs = session.metadata.providerAccountUsageRefsV1;
+		const ids = isObj(refs) && Array.isArray(refs.recordIds) ? refs.recordIds.filter((id): id is string => typeof id === "string") : [];
+		if (ids.length === 0) return [];
+		this.encryptionMode ??= this.http<Obj>("GET", "/v1/account/encryption").then((r) => String(r.mode ?? "e2ee"));
+		const sealed = (await this.encryptionMode) !== "plain";
+		const keys = this.keys;
+		const machineKey = keys.type === "dataKey" ? keys.machineKey : keys.type === "legacy" ? machineKeyFromLegacySecret(keys.secret) : null;
+		const records = await Promise.all(
+			ids.map(async (id) => {
+				const path = `/${sealed ? "v2" : "v3"}/connect/provider-account-usage/${encodeURIComponent(id)}`;
+				const res = await this.http<Obj>("GET", path).catch((e) => {
+					if (e instanceof HappierError && e.status === 404) return null;
+					throw e;
+				});
+				if (!res) return null;
+				if (!sealed) return isObj(res.content) && res.content.t === "plain" ? res.content.v : null;
+				const box = isObj(res.sealed) ? res.sealed.ciphertext : undefined;
+				return typeof box === "string" && machineKey ? openAccountScoped(machineKey, "provider_account_usage_snapshot", box) : null;
+			}),
+		);
+		return records.filter(isObj);
 	}
 
 	private async sessionMachine(session: Session): Promise<Machine> {

@@ -58,11 +58,14 @@ export function questionsOf(req: PermissionRequest): Array<{ question: string; o
 	return out;
 }
 
-/** A future time as "14:30 (in 2h 5m)", or "now" when it has passed. */
+/** A future time as "14:30 (in 2h 5m)", "Thu 16:00 (in 3d 2h)" past a day, or "now" when it has passed. */
 export function untilText(at: number, now = Date.now()): string {
 	const minutes = Math.ceil((at - now) / 60_000);
 	if (minutes <= 0) return "now";
-	const clock = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-	const left = minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ""}`;
-	return `${clock} (in ${left})`;
+	const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	const hours = Math.floor(minutes / 60);
+	const span = (n: number, unit: string, rest: number, restUnit: string) => `${n}${unit}${rest ? ` ${rest}${restUnit}` : ""}`;
+	if (hours < 24) return `${time} (in ${hours ? span(hours, "h", minutes % 60, "m") : `${minutes}m`})`;
+	const day = new Date(at).toLocaleDateString([], { weekday: "short" });
+	return `${day} ${time} (in ${span(Math.floor(hours / 24), "d", hours % 24, "h")})`;
 }

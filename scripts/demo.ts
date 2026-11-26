@@ -233,6 +233,7 @@ function toSession(spec: Spec): Session {
 			path: `${HOME}/${spec.path}`,
 			homeDir: HOME,
 			permissionMode: "default",
+			providerAccountUsageRefsV1: spec.flavor === "claude" ? { v: 1, recordIds: ["demo"], updatedAtMs: now } : undefined,
 		},
 		metadataVersion: 1,
 		agentState: { requests },
@@ -293,6 +294,13 @@ class DemoClient extends HappierClient {
 	override async fetchMessages(session: Session, opts: { afterSeq?: number } = {}): Promise<MessagePage> {
 		const messages = opts.afterSeq === undefined ? rows(session.id) : [];
 		return { messages, hasMore: false, nextBeforeSeq: null, nextAfterSeq: null };
+	}
+	/** The Claude account's plan limits, as its agents report them. */
+	override async providerUsageRecords() {
+		const meter = (meterId: string, label: string, utilizationPct: number, resetIn: number) => ({
+			meterId, label, utilizationPct, resetAtMs: Date.now() + resetIn, unit: "unknown", status: "ok", details: { limitCategory: "usage_limit" },
+		});
+		return [{ providerId: "claude", state: "loaded_data", fetchedAtMs: Date.now(), meters: [meter("five_hour", "5-hour", 48, 2.2 * 3_600_000), meter("seven_day", "Weekly", 74, 2.6 * 86_400_000)] }];
 	}
 	override async listFiles() {
 		return ["src/gateway/server.ts", "src/gateway/ratelimit.ts", "src/gateway/auth.ts", "README.md"];

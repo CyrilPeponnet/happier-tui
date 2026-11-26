@@ -11,6 +11,9 @@ import {
 	type SlashCommand,
 	truncateToWidth,
 	TuiAltScreen,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	visibleWidth,
 	VStack,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
@@ -28,6 +31,7 @@ import {
 } from "./happier/client.js";
 import { CLAUDE_EFFORT_LEVELS, effortOverride, isWaitingForLimit, sessionGoal, sessionModes, sessionOptions, usageLimit } from "./happier/controls.js";
 import { latestOptions, type Row, Transcript } from "./happier/transcript.js";
+import { type PlanLimit, planLimits } from "./happier/usage.js";
 import {
 	type Attention,
 	type AttentionState,
@@ -46,10 +50,14 @@ import { Picker, type PickerOptions } from "./ui/picker.js";
 import { Home, sortSessions, statusGlyph } from "./ui/home.js";
 import { agoText, c, clean, editorTheme, shortPath, SPINNER } from "./ui/theme.js";
 import { TranscriptView } from "./ui/transcript-view.js";
+import { type Meter, meterGlyphs, meterRows } from "./ui/usage.js";
 
 const PERMISSION_MODES = ["default", "read-only", "safe-yolo", "yolo", "plan"];
 /** Without input for this long the user counts as away, even if the terminal still has focus. */
 const PRESENCE_IDLE_MS = 3 * 60_000;
+/** How often the open session's plan limits are read again, and when they count as old news. */
+const PLAN_REFRESH_MS = 5 * 60_000;
+const PLAN_STALE_MS = 30 * 60_000;
 
 const LOCAL_COMMANDS: SlashCommand[] = [
 	{ name: "sessions", description: "Back to the session list (ctrl+s)" },
@@ -61,7 +69,7 @@ const LOCAL_COMMANDS: SlashCommand[] = [
 	{ name: "queue", description: "Edit or cancel messages waiting to be sent" },
 	{ name: "tree", description: "Branch into a new session from an earlier message" },
 	{ name: "goal", description: "Show, set or clear the session's goal" },
-	{ name: "limit", description: "After a usage limit: resume automatically, check now" },
+	{ name: "usage", description: "Context and plan limits; after a usage limit, resume automatically" },
 	{ name: "abort", description: "Interrupt the current turn (esc)" },
 	{ name: "stop-session", description: "Stop the session's agent process" },
 	{ name: "archive", description: "Archive this session" },
@@ -94,8 +102,20 @@ function debug(message: string): void {
 }
 
 class Lines implements Component {
-	constructor(private readonly fn: (width: number) => string[]) {}
+	constructor(
+		private readonly fn: (width: number) => string[],
+		/** What a left click at this cell does, if anything. */
+		private readonly clickAt?: (x: number, y: number) => (() => void) | undefined,
+	) {}
 	invalidate(): void {}
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const action = event.button === "left" ? this.clickAt?.(event.x, event.y) : undefined;
+		if (!action) return undefined;
+		// Claim the press too, so that its release comes back here as a click.
+		if (event.type !== "click") return { handled: true, render: false };
+		action();
+		return { handled: true, render: true };
+	}
 	render(width: number): string[] {
 		return this.fn(width).map((l) => truncateToWidth(l, width));
 	}
@@ -143,7 +163,11 @@ export class App {
 	/** The open picker, floating or docked; hide() closes it. */
 	private overlay: Pick<OverlayHandle, "hide"> | null = null;
 	/** A picker answering a request, shown above the editor so the conversation stays visible. */
-	private docked: { picker: Picker; requestId: string; cancel: () => void } | null = null;
+	private docked: { picker: Picker; requestId?: string; cancel: () => void } | null = null;
+	/** Plan limits of each session's agent account; `refs` is the metadata they were read for. */
+	private plans = new Map<string, { limits: PlanLimit[]; refs: string; at: number; loading?: boolean }>();
+	/** Footer columns of the usage glyphs, which open /usage when clicked. */
+	private meterCells: [from: number, to: number] | null = null;
 	/** Offered choices picked from the keyboard, highlighted in the transcript (`key` as in `prompted`). */
 	private optionPick: { key: string; index: number } | null = null;
 	private lastCtrlC = 0;
@@ -231,7 +255,7 @@ export class App {
 			{ component: new Lines((w) => this.renderRequests(w)), basis: "auto", shrink: 0 },
 			{ component: new Lines((w) => this.docked?.picker.render(w) ?? []), basis: "auto", shrink: 0 },
 			{ component: this.editor, basis: "auto", shrink: 1, minSize: 3 },
-			{ component: new Lines((w) => this.renderFooter(w)), basis: 1, shrink: 0 },
+			{ component: new Lines((w) => this.renderFooter(w), (x) => this.clickFooter(x)), basis: 1, shrink: 0 },
 		]);
 		this.homeRoot = new VStack([
 			{ component: this.home, basis: 0, grow: 1, minSize: 3 },
@@ -327,6 +351,8 @@ export class App {
 			}
 		}
 		this.syncPresence();
+		const open = this.mode === "chat" ? this.current() : undefined;
+		if (open) this.refreshPlan(open);
 		const anyBusy = [...this.client.sessions.values()].some((s) => this.busy(s));
 		if (anyBusy) dirty = true;
 		// The start screen shows each session's age.
@@ -794,8 +820,8 @@ export class App {
 				return s && this.branch(s);
 			case "goal":
 				return s && this.goal(s, arg.trim());
-			case "limit":
-				return s && this.limit(s);
+			case "usage":
+				return s && this.usage(s);
 			case "model": {
 				if (!s) return;
 				const { current, available: reported } = sessionModels(s);
@@ -1065,19 +1091,74 @@ export class App {
 		else if (action === "clear") return this.goal(s, "clear");
 	}
 
-	private async limit(s: Session): Promise<void> {
-		const u = usageLimit(s.metadata);
-		const waiting = isWaitingForLimit(u);
-		const action = await this.pick({
-			title: waiting ? `Waiting for the usage limit${u?.resetAt ? ` to reset at ${untilText(u.resetAt)}` : ""}` : "Usage limit",
-			noFilter: true,
-			items: [
-				...(waiting
-					? [{ value: "waitResume.cancel", label: "Stop waiting", description: "do not resume this session by itself" }]
-					: [{ value: "waitResume.enable", label: "Resume automatically", description: "continue this session when the limit resets" }]),
-				{ value: "checkNow", label: "Check now", description: "resume right away if the limit has reset" },
-			],
-		});
+	/** The open session's gauges: its context, then the plan limits of the agent's account. */
+	private meters(s: Session): Meter[] {
+		const meters: Meter[] = [];
+		const u = this.entries.get(s.id)?.transcript.usage;
+		if (u?.contextUsed && u.contextWindow) {
+			const cost = u.cost ? ` · $${u.cost.toFixed(2)} this session` : "";
+			const detail = `${tokens(u.contextUsed)} of ${tokens(u.contextWindow)} tokens${cost}`;
+			meters.push({ short: "ctx", label: "Context", usedPct: (u.contextUsed / u.contextWindow) * 100, detail });
+		}
+		for (const l of this.plans.get(s.id)?.limits ?? []) {
+			const stale = l.reportedAt && Date.now() - l.reportedAt > PLAN_STALE_MS ? `reported ${agoText(l.reportedAt)}` : undefined;
+			meters.push({ short: l.short, label: `${l.label} limit`, usedPct: l.usedPct, resetAt: l.resetAt, detail: stale });
+		}
+		return meters;
+	}
+
+	/**
+	 * Reads the session's plan limits again when the agent reported new ones (its metadata points at
+	 * them) or every few minutes, as a reset changes them without a report.
+	 */
+	private refreshPlan(s: Session): void {
+		const refs = JSON.stringify(s.metadata.providerAccountUsageRefsV1 ?? null);
+		const plan = this.plans.get(s.id);
+		if (plan?.loading || (plan && plan.refs === refs && Date.now() - plan.at < PLAN_REFRESH_MS)) return;
+		if (refs === "null") {
+			if (plan?.limits.length) this.plans.delete(s.id);
+			return;
+		}
+		this.plans.set(s.id, { limits: plan?.limits ?? [], refs, at: Date.now(), loading: true });
+		const model = sessionModels(s).current;
+		this.client
+			.providerUsageRecords(s)
+			.then((records) => this.plans.set(s.id, { limits: planLimits(records, s.metadata.flavor as string | undefined, model), refs, at: Date.now() }))
+			.catch((e) => {
+				debug(`plan limits of ${s.id.slice(0, 8)}: ${errorText(e)}`);
+				this.plans.set(s.id, { limits: plan?.limits ?? [], refs, at: Date.now() });
+			})
+			.finally(() => this.tui.requestRender());
+	}
+
+	/** Usage panel above the editor: the meters, and after a usage limit, what to do about it. */
+	private async usage(s: Session): Promise<void> {
+		const meters = this.meters(s);
+		const u = this.entries.get(s.id)?.transcript.usage;
+		const header = meters.length
+			? meterRows(meters, this.tui.terminal.columns - 4)
+			: [c.dim(u?.contextUsed ? `Context: ${tokens(u.contextUsed)} tokens` : "Nothing reported yet: the agent reports its usage after a turn.")];
+		const limit = usageLimit(s.metadata);
+		const waiting = isWaitingForLimit(limit);
+		const items = !limit
+			? []
+			: [
+					waiting
+						? { value: "waitResume.cancel", label: "Stop waiting", description: "do not resume this session by itself" }
+						: { value: "waitResume.enable", label: "Resume automatically", description: "continue this session when the limit resets" },
+					{ value: "checkNow", label: "Check now", description: "resume right away if the limit has reset" },
+				];
+		const when = limit?.resetAt ? ` until ${untilText(limit.resetAt)}` : "";
+		const action = await this.pick(
+			{
+				title: !limit ? "Usage" : waiting ? `Usage · waiting for the limit to reset${when}` : `Usage · limit reached${when}`,
+				header,
+				noFilter: true,
+				items,
+				hint: "esc to close",
+			},
+			{},
+		);
 		if (!action) return;
 		const res = await this.client.usageLimitAction(s, action as "waitResume.enable" | "waitResume.cancel" | "checkNow");
 		this.flash(`Usage limit: ${String(res.status ?? "done").replace(/_/g, " ")}`, "info");
@@ -1086,10 +1167,13 @@ export class App {
 	// --- overlays ---
 
 	/**
-	 * Shows a picker over the screen or, answering `forRequest` in a session, above the editor; that
-	 * one closes by itself once the request is no longer pending.
+	 * Shows a picker over the screen or, `docked` in a session, above the editor, so the transcript
+	 * stays in view. A picker answering a request closes by itself once it is no longer pending.
 	 */
-	private pick(opts: Omit<PickerOptions, "onSelect" | "onCancel">, forRequest?: string): Promise<string | null> {
+	private pick(
+		opts: Omit<PickerOptions, "onSelect" | "onCancel">,
+		docked?: { requestId?: string },
+	): Promise<string | null> {
 		return new Promise((resolve) => {
 			const close = (value: string | null) => {
 				this.overlay?.hide();
@@ -1100,8 +1184,8 @@ export class App {
 			};
 			const picker = new Picker({ ...opts, onSelect: (item) => close(item.value), onCancel: () => close(null) });
 			this.overlay?.hide();
-			if (forRequest && this.mode === "chat") {
-				this.docked = { picker, requestId: forRequest, cancel: () => close(null) };
+			if (docked && this.mode === "chat") {
+				this.docked = { picker, requestId: docked.requestId, cancel: () => close(null) };
 				this.overlay = { hide: () => (this.docked = null) };
 				this.tui.setFocus(picker);
 				this.tui.requestRender();
@@ -1128,7 +1212,8 @@ export class App {
 	 * and highlights the choices the agent offered once its turn ends, unless you have started typing.
 	 */
 	private promptForRequests(s: Session): void {
-		if (this.docked && !pendingRequests(s).some((r) => r.id === this.docked?.requestId)) this.docked.cancel();
+		const docked = this.docked;
+		if (docked?.requestId && !pendingRequests(s).some((r) => r.id === docked.requestId)) docked.cancel();
 		if (this.overlay || this.mode !== "chat" || s.id !== this.currentId) return;
 		const next = pendingRequests(s).find((r) => !this.prompted.has(`${s.id}:${r.id}`));
 		if (next) {
@@ -1200,7 +1285,7 @@ export class App {
 					noFilter: true,
 					items: q.options,
 					hint: "esc to answer later (ctrl+r)",
-				}, req.id);
+				}, { requestId: req.id });
 				if (choice === null) return;
 				answers[q.question] = [choice];
 			}
@@ -1218,7 +1303,7 @@ export class App {
 				{ value: "denied", label: "Deny" },
 				{ value: "abort", label: "Deny and stop the turn" },
 			],
-		}, req.id);
+		}, { requestId: req.id });
 		if (!choice) return;
 		await this.client.respondPermission(s, req, choice as "approved" | "approved_for_session" | "denied" | "abort");
 	}
@@ -1349,7 +1434,7 @@ export class App {
 				const when = limit.resetAt ? ` at ${untilText(limit.resetAt)}` : "";
 				const text = isWaitingForLimit(limit)
 					? `Usage limit: resumes by itself${when}`
-					: `Usage limit: ${limit.status}${when} · /limit`;
+					: `Usage limit: ${limit.status}${when} · /usage`;
 				lines.push(` ${c.warn("⏸")} ${c.warn(text)}`);
 			}
 			const queued = this.queued.get(s.id) ?? [];
@@ -1395,19 +1480,27 @@ export class App {
 		const effort =
 			sessionOptions(s.metadata, model).find((o) => o.id === "reasoning_effort")?.current ?? effortOverride(s.metadata);
 		if (effort) parts.push(c.dim(`thinking ${effort}`));
-		const usage = this.entries.get(s.id)?.transcript.usage;
-		if (usage?.contextUsed && usage.contextWindow) {
-			const pct = Math.round((usage.contextUsed / usage.contextWindow) * 100);
-			const of = `${tokens(usage.contextUsed)}/${tokens(usage.contextWindow)}`;
-			parts.push((pct >= 85 ? c.warn : c.dim)(`context ${pct}% (${of})`));
-		} else if (usage?.contextUsed) parts.push(c.dim(`context ${tokens(usage.contextUsed)}`));
-		if (usage?.cost) parts.push(c.dim(`$${usage.cost.toFixed(2)}`));
 		let state: string;
 		if (this.busy(s)) state = c.warn(`${SPINNER[this.frame % SPINNER.length]} working`) + c.dim(" · esc to interrupt");
 		else if (!s.active) state = c.dim("inactive · sending resumes it");
 		else state = c.ok("ready");
+		const meters = this.meters(s);
+		const usage = this.entries.get(s.id)?.transcript.usage;
+		this.meterCells = null;
+		if (meters.length) {
+			const at = visibleWidth(` ${state}  ·  ${parts.map((p) => `${p} · `).join("")}`);
+			const glyphs = meterGlyphs(meters);
+			this.meterCells = [at, at + visibleWidth(glyphs)];
+			parts.push(glyphs);
+		} else if (usage?.contextUsed) parts.push(c.dim(`context ${tokens(usage.contextUsed)}`));
 		const right = `${this.busy(s) ? "" : `last activity ${agoText(s.activityAt)} · `}ctrl+s sessions · /keys `;
 		return [justify(` ${state}${c.dim("  ·  ")}${parts.join(c.dim(" · "))}`, this.waiting() + c.faint(right), width)];
+	}
+
+	private clickFooter(x: number): (() => void) | undefined {
+		const s = this.current();
+		if (!s || !this.meterCells || x < this.meterCells[0] || x >= this.meterCells[1]) return undefined;
+		return () => this.run(() => this.usage(s));
 	}
 
 	/**
